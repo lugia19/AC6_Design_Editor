@@ -1,8 +1,9 @@
-import zlib, struct
 import os
+import sys
+import zlib, struct
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QGridLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QGridLayout, QComboBox, QCompleter
 from io import BytesIO
 
 # Define the category offsets
@@ -14,7 +15,10 @@ CATEGORY_OFFSETS = {
     'fcs': 0x70000000
 }
 
-import struct
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 class ChunkHeader:
     def __init__(self, signature, length, version):
@@ -110,7 +114,7 @@ class DesignDecompressor(QWidget):
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle('Design Decompressor')
+        self.setWindowTitle('Design Editor')
         self.setGeometry(100, 100, 400, 400)  # Adjust the window size as needed
 
         layout = QVBoxLayout()
@@ -173,23 +177,35 @@ class DesignDecompressor(QWidget):
         layout.addWidget(parts_line)
 
         parts_layout = QVBoxLayout()
-        part_rows = [['Head', 'Body', 'Arms', 'Legs'],
+        part_rows = [['Head', 'Core'],
+                     ['Arms', 'Legs'],
                      ['Booster', 'Generator', 'FCS']]
         self.part_fields = []
         for part_row in part_rows:
             row_layout = QHBoxLayout()
-            for part_name in part_row:
+            for idx, part_name in enumerate(part_row):
                 part_layout = QVBoxLayout()
                 part_label = QLabel(part_name)
                 part_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 part_layout.addWidget(part_label)
-                part_field = QLineEdit()
+                part_field = QComboBox()
+                part_field.setEditable(True)
+                part_field.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+                completer = part_field.completer()
+                completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+
+                part_field.setMaximumWidth(400)  # Set a maximum width for the part comboboxes
                 part_layout.addWidget(part_field)
                 row_layout.addLayout(part_layout)
+                #if len(part_row) < 3 and idx == 0:
+                #    row_layout.addStretch(1)
                 self.part_fields.append(part_field)
-            row_layout.addStretch(1)  # Add stretch to make the second row fill the entire space
+            #row_layout.addStretch(1)
             parts_layout.addLayout(row_layout)
         layout.addLayout(parts_layout)
+        self.load_parts()
 
         # Weapons section
         weapons_label = QLabel('Weapons')
@@ -202,19 +218,41 @@ class DesignDecompressor(QWidget):
         weapons_line.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(weapons_line)
 
-        weapons_layout = QHBoxLayout()
-        weapon_names = ['L Hand', 'R Hand', 'L Shoulder', 'R Shoulder', 'Core Expansion']
+        weapons_layout = QVBoxLayout()
+        weapon_rows = [
+            ['Left Hand', 'Right Hand'],
+            ['Left Shoulder', 'Right Shoulder'],
+            ['Core Expansion']
+        ]
         self.weapon_fields = []
-        for weapon_name in weapon_names:
-            weapon_layout = QVBoxLayout()
-            weapon_label = QLabel(weapon_name)
-            weapon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            weapon_layout.addWidget(weapon_label)
-            weapon_field = QLineEdit()
-            weapon_layout.addWidget(weapon_field)
-            weapons_layout.addLayout(weapon_layout)
-            self.weapon_fields.append(weapon_field)
+        for weapon_row in weapon_rows:
+            row_layout = QHBoxLayout()
+            for weapon_name in weapon_row:
+                if len(weapon_row) == 1:
+                    row_layout.addStretch(1)
+                weapon_layout = QVBoxLayout()
+                weapon_label = QLabel(weapon_name)
+                weapon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                weapon_layout.addWidget(weapon_label)
+                weapon_field = QComboBox()
+                weapon_field.setMaximumWidth(400)  # Set a maximum width for the part comboboxes
+                weapon_field.setEditable(True)
+                weapon_field.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+
+                completer = weapon_field.completer()
+                completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+
+                weapon_layout.addWidget(weapon_field)
+                row_layout.addLayout(weapon_layout)
+                if len(weapon_row) == 1:
+                    row_layout.addStretch(1)
+                self.weapon_fields.append(weapon_field)
+            #row_layout.addStretch(1)
+            weapons_layout.addLayout(row_layout)
         layout.addLayout(weapons_layout)
+        self.load_weapons()
 
         # Save button
         save_button = QPushButton('Save')
@@ -222,6 +260,50 @@ class DesignDecompressor(QWidget):
         layout.addWidget(save_button)
 
         self.setLayout(layout)
+
+    def load_parts(self):
+        part_files = [
+            "data/EquipParamProtector.txt",
+            "data/EquipParamProtector.txt",
+            "data/EquipParamProtector.txt",
+            "data/EquipParamProtector.txt",
+            "data/EquipParamBooster.txt",
+            "data/EquipParamGenerator.txt",
+            "data/EquipParamFcs.txt"
+        ]
+
+        part_keywords = [
+            "HEAD",
+            "CORE",
+            "ARMS",
+            "LEGS",
+            "",
+            "",
+            ""
+        ]
+
+        cwd = os.getcwd()
+        for i, part_field in enumerate(self.part_fields):
+            if i < len(part_files):
+                with open(resource_path(part_files[i]), 'r') as file:
+                    parts = [line.strip() for line in file if part_keywords[i] in line]
+                    part_field.addItems(parts)
+
+    def load_weapons(self):
+
+        cwd = os.getcwd()
+        for i, weapon_field in enumerate(self.weapon_fields):
+            with open(resource_path("data/EquipParamWeapon.txt"), 'r') as file:
+                weapons = [line.strip() for line in file]
+                if i == 0 or i == 2:
+                    weapons = [weapon for weapon in weapons if "(Right)" not in weapon]
+                if i == 1 or i == 3:
+                    weapons = [weapon for weapon in weapons if "(Right)" in weapon or "Fists" in weapon]
+                if i == 4:
+                    weapons = [weapon for weapon in weapons if "EXPANSION" in weapon]
+                weapon_field.addItem("-1 Empty")
+                weapon_field.addItems(weapons)
+
     def browse_design_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Design File', '', 'All Files (*)')
         if file_path:
@@ -386,7 +468,7 @@ class DesignDecompressor(QWidget):
 
             part_categories = ["body_part", "body_part", "body_part", "body_part", "booster", "generator", "fcs"]
             for idx, part_field in enumerate(part_fields):
-                part_id = int(part_field.text())
+                part_id = int(part_field.currentText().split(' ')[0].strip())
                 assemble_data.write(equipment_id_to_save_id(part_id, part_categories[idx]))
 
             assemble_data.write(b'\xFF\xFF\xFF\xFF')
@@ -479,7 +561,7 @@ QComboBox {
     border: 1px solid {hover_color};
 }
 
-QComboBox QAbstractItemView {
+QAbstractItemView {
     background-color: {secondary_color};
     color: {text_color};
 }
