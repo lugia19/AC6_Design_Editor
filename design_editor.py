@@ -367,10 +367,25 @@ class DesignDecompressor(QWidget):
             parts, weapons = process_assemble_bytes(assemble_bytes)
             if parts is not None and weapons is not None:
                 for i, (equipment_id, category) in enumerate(parts):
-                    self.part_fields[i].setText(f"{equipment_id}")
+                    match_found = False
+                    for index in range(self.part_fields[i].count()):
+                        if str(equipment_id) in self.part_fields[i].itemText(index):
+                            self.part_fields[i].setCurrentIndex(index)
+                            match_found = True
+                            break
+                    if not match_found:
+                        self.part_fields[i].setEditText(f"{equipment_id}")
+
                 for i, (equipment_id, category) in enumerate(weapons):
                     if i < len(self.weapon_fields):
-                        self.weapon_fields[i].setText(f"{equipment_id}")
+                        match_found = False
+                        for index in range(self.weapon_fields[i].count()):
+                            if str(equipment_id) in self.weapon_fields[i].itemText(index):
+                                self.weapon_fields[i].setCurrentIndex(index)
+                                match_found = True
+                                break
+                        if not match_found:
+                            self.weapon_fields[i].setEditText(f"{equipment_id}")
         else:
             print("Assemble section not found.")
 
