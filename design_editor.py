@@ -506,7 +506,7 @@ class DesignDecompressor(QWidget):
                     if isinstance(weapon_field, int):
                         weapon_id = weapon_field
                     else:
-                        weapon_id = int(weapon_field.text())
+                        weapon_id = int(weapon_field.currentText().split(' ')[0].strip())
                     assemble_data.write(equipment_id_to_save_id(weapon_id, 'weapon'))
 
             assemble_header = ChunkHeader('Assemble', len(assemble_data.getvalue()), 3)
