@@ -335,9 +335,15 @@ class DesignDecompressor(QWidget):
             # Find the position of the zlib header [0x78, 0xDA]
             start = data.find(bytes([0x78, 0xDA]))
             if start != -1:
-                # Cut off the start of the file
+                # Cut off the extra header
                 data = data[start:]
-                decompressed_data = zlib.decompress(data)
+                try:
+                    decompressed_data = zlib.decompress(data)
+                except zlib.error as e:
+                    #Flip the last 4 bytes and try again.
+                    flipped_data = data[:-4] + data[-4:][::-1]
+                    decompressed_data = zlib.decompress(flipped_data)
+
                 return decompressed_data
             else:
                 print("Zlib header not found.")
