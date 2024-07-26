@@ -342,7 +342,18 @@ class DesignDecompressor(QWidget):
                 except zlib.error as e:
                     #Flip the last 4 bytes and try again.
                     flipped_data = data[:-4] + data[-4:][::-1]
-                    decompressed_data = zlib.decompress(flipped_data)
+                    try:
+                        decompressed_data = zlib.decompress(flipped_data)
+                    except zlib.error as ex:
+                        #Okay, fuck it, we're just going to ignore the checksum.
+                        raw_data = data[2:-4]
+                        decompressor = zlib.decompressobj(wbits=-zlib.MAX_WBITS)
+                        decompressed_data = decompressor.decompress(raw_data)
+                        remaining_data = decompressor.unused_data
+                        if remaining_data:
+                            print("Warning: Decompression completed with remaining data.")
+                            print("Remaining data:", remaining_data)
+
 
                 return decompressed_data
             else:
