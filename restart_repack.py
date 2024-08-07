@@ -154,7 +154,7 @@ class RepackUI(QWidget):
         for index in range(self.dir_list.count()):
             dir_path = self.dir_list.item(index).text()
             print(f"Repacking directory: {dir_path}")
-            self.run_command([witchybnd_path, "-s", dir_path], working_dir=os.path.dirname(witchybnd_path))
+            self.run_command([witchybnd_path, "-s", dir_path])
 
     def start(self):
         self.run_command([armoredcore_bat_path], working_dir=os.path.dirname(armoredcore_bat_path))
