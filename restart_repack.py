@@ -131,51 +131,33 @@ class RepackUI(QWidget):
         if self.dir_list.count() > 0:
             self.dir_list.takeItem(self.dir_list.count() - 1)
 
-    def run_command(self, command_path, args=None):
-        if args is None:
-            args = []
+    def run_command(self, args, working_dir=None):
+        if isinstance(args, str):
+            args = [args]
 
+        completed_process = None
         try:
-            command_dir = os.path.dirname(command_path)
-            command_line = f'"{command_path}" {" ".join(args)}'
-            if command_dir == "":
-                command_dir = None
+            completed_process = subprocess.run(args, check=True, capture_output=True, text=True, cwd=working_dir)
+        except subprocess.CalledProcessError as e:
+            print(f"Called process threw error: {e}")
+        finally:
+            if completed_process:
+                print(completed_process.stdout)
+                print(completed_process.stderr)
 
-            cmd_command = f'start /wait cmd /c "{command_line}"'
 
-            process = subprocess.Popen(
-                cmd_command,
-                cwd=command_dir,
-                shell=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                close_fds=True
-            )
-            stdout, stderr = process.communicate()
-
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd_command, output=stdout, stderr=stderr)
-
-            print(f"{os.path.basename(command_path)} executed successfully.")
-        except subprocess.CalledProcessError as error:
-            print(f"Error running {os.path.basename(command_path)}: {error}")
-            if error.output:
-                print(f"stdout: {error.output.decode()}")
-            if error.stderr:
-                print(f"stderr: {error.stderr.decode()}")
 
     def kill_process(self):
-        self.run_command("taskkill", ["/F", "/IM", "armoredcore6.exe"])
+        self.run_command(["taskkill", "/F", "/IM", "armoredcore6.exe"])
 
     def repack(self):
         for index in range(self.dir_list.count()):
             dir_path = self.dir_list.item(index).text()
             print(f"Repacking directory: {dir_path}")
-            self.run_command(witchybnd_path, ["-p",dir_path])
+            self.run_command([witchybnd_path, "-s", dir_path], working_dir=os.path.dirname(witchybnd_path))
 
     def start(self):
-        self.run_command(armoredcore_bat_path)
+        self.run_command([armoredcore_bat_path], working_dir=os.path.dirname(armoredcore_bat_path))
 
     def restart_and_repack(self):
         self.kill_process()
