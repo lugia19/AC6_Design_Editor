@@ -1,9 +1,17 @@
+import math
 import os
 import sys
 import zlib, struct
+from typing import List
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QGridLayout, QComboBox, QCompleter
+from PyQt6 import QtWidgets, QtCore
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QGridLayout, QComboBox, QCompleter, QColorDialog, QCheckBox, \
+    QStackedWidget, QSpacerItem, QSizePolicy, QMessageBox, QScrollArea
+from PyQt6.QtCore import Qt, QSize, QRect
+from PyQt6.QtGui import QPainter, QPainterPath, QColor
+from PyQt6.QtWidgets import QAbstractButton, QSizePolicy
 from io import BytesIO
 
 # Define the category offsets
@@ -15,10 +23,62 @@ CATEGORY_OFFSETS = {
     'fcs': 0x70000000
 }
 
+color_section_labels = ["Head", "Core", "R arm", "L arm", "Legs", "R wep", "L wep", "R back", "L back"]
+color_labels = ["Main", "Sub", "Support", "Optional", "Other", "Device"]
+materials_list = []
+for i in range(36):
+    materials_list.append(f"{i} - Reflectiveness: {round(math.floor(i/6)*0.2, 2)} Luster: {round((i % 6) * 0.2,2)}")
+
+
+pattern_list = ["Pattern 0 (None)"]
+for i in range(29):
+    pattern_list.append(f"Pattern {i+1}")
+pattern_size_list = ['0 - Small', '1 - Medium', '2 - Large']
+weathering_list = ['Weathered 0 (None)']
+for i in range(23):
+    weathering_list.append(f"Weathered {i}")
+
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
+class CustomCheckBox(QAbstractButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(False)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = QRectF(0, 0, self.width(), self.height())
+        path = QPainterPath()
+        path.addRect(rect)
+
+        if self.isChecked():
+            painter.fillPath(path, QColor(colors_dict["secondary_color"]))  # Fill color when checked
+        else:
+            painter.fillPath(path, QColor(colors_dict["secondary_color"]))  # Fill color when unchecked
+
+        painter.setPen(QColor(colors_dict["text_color"]))  # Border color
+        painter.drawPath(path)
+
+        if self.isChecked():
+            check_path = QPainterPath()
+            check_path.moveTo(rect.left() + 4, rect.center().y())
+            check_path.lineTo(rect.center().x() - 2, rect.bottom() - 4)
+            check_path.lineTo(rect.right() - 4, rect.top() + 4)
+            painter.setPen(QColor(colors_dict["text_color"]))  # Check mark color
+            painter.drawPath(check_path)
+
+    def hitButton(self, pos):
+        return self.contentsRect().contains(pos)
+
+    def sizeHint(self):
+        return QSize(20, 20)  # Adjust the size as needed
 
 class ChunkHeader:
     def __init__(self, signature, length, version):
@@ -40,6 +100,303 @@ class ChunkHeader:
         signature_bytes = self.signature.encode('ascii').ljust(0x10, b'\x00')
         header_bytes = struct.pack('<IIII', self.length, self.version, 0, 0)
         return signature_bytes + header_bytes
+
+class ColorRowData:
+    def __init__(self, color_name, color=None, material=None, pattern=False):
+        self.color_name = color_name
+        self.color = color or QColor(255, 255, 255)  # Default to white if no color is provided
+        self.material = material
+        self.pattern = pattern
+
+class ColoringSectionData:
+    def __init__(self, name):
+        self.name = name
+        self.color_rows = []
+        self.pattern_number = None
+        self.pattern_size = None
+        self.pattern_colors = []
+        self.weathering = None
+
+    def to_bytes(self):
+        data = bytearray()
+        data.extend(b'\xff\x00\x00\x00')  # unk00
+        data.extend(struct.pack('<h', int(self.weathering.split(" ")[1]) or 0))  # weathering
+        data.extend(b'\x00\x00')  # unk06
+
+        for color_row in self.color_rows:
+            color = color_row.color
+            data.extend(struct.pack('<BBBB', color.red(), color.green(), color.blue(), color.alpha()))
+
+        for color_row in self.color_rows:
+            material = color_row.material
+            material_index = 0  # Default to 0 if material is not found
+            if material:
+                material_index = int(material.split(' - ')[0])  # Extract the material index from the string
+            data.extend(struct.pack('<h', material_index))
+
+        data.extend(struct.pack('<B', int(self.pattern_number.split(" ")[1]) or 0))  # patternDesign
+        data.extend(struct.pack('<B', int(self.pattern_size.split(" - ")[0]) or 0))  # patternSize
+        data.extend(b'\x00\x00')  # unk2e
+
+        for color in self.pattern_colors:
+            data.extend(struct.pack('<BBBB', color.red(), color.green(), color.blue(), color.alpha()))
+
+        # Calculate unk40 based on the pattern checkbox states
+        unk40 = 0b00111111  # Default value with all bits set to 1
+        for i, color_row in enumerate(reversed(self.color_rows[:5])):
+            if color_row.pattern:
+                unk40 &= ~(1 << (i + 2))  # Set the corresponding bit to 0 if pattern is enabled
+
+        data.extend(struct.pack('<H', unk40))  # unk40
+        data.extend(b'\x00\x00')  # unk42
+
+        return bytes(data)
+
+    @classmethod
+    def from_bytes(cls, name, data):
+        coloring_section = cls(name)
+
+        # Skip unk00
+        weathering = struct.unpack('<h', data[4:6])[0]
+        coloring_section.weathering = weathering
+
+        # Skip unk06
+
+        for i in range(6):
+            start = 8 + i * 4
+            end = start + 4
+            rgba = struct.unpack('<BBBB', data[start:end])
+            color = QColor(*rgba)
+            coloring_section.color_rows.append(ColorRowData(color_labels[i], color=color))
+
+        for i in range(6):
+            start = 32 + i * 2
+            end = start + 2
+            material_index = struct.unpack('<h', data[start:end])[0]
+            material = f"{material_index}"  # Placeholder material string
+            coloring_section.color_rows[i].material = material
+
+        coloring_section.pattern_number = data[44]
+        coloring_section.pattern_size = data[45]
+
+        # Skip unk2e
+
+        for i in range(4):
+            start = 48 + i * 4
+            end = start + 4
+            rgba = struct.unpack('<BBBB', data[start:end])
+            color = QColor(*rgba)
+            coloring_section.pattern_colors.append(color)
+        if len(data) < 66:
+            data += b"\x00\x00"
+        unk40 = struct.unpack('<H', data[64:66])[0]
+        for i, color_row in enumerate(reversed(coloring_section.color_rows[:5])):
+            color_row.pattern = not bool(unk40 & (1 << (i + 2)))
+
+        # Skip unk42
+
+        return coloring_section
+
+
+class ColorRow(QWidget):
+    def __init__(self, color_label, parent=None):
+        super().__init__(parent)
+        self.color_name = color_label
+        self.initUI()
+
+    def initUI(self):
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.label = QLabel(self.color_name)
+        layout.addWidget(self.label)
+
+        self.color_picker = QPushButton()
+        self.color_picker.clicked.connect(self.open_color_picker)
+        layout.addWidget(self.color_picker)
+
+        self.material_dropdown = QComboBox()
+        self.material_dropdown.addItems(materials_list)  # Dummy options
+        layout.addWidget(self.material_dropdown)
+
+        checkbox_container = QHBoxLayout()
+        self.pattern_checkbox = CustomCheckBox()
+        checkbox_container.addWidget(self.pattern_checkbox)
+        self.pattern_checkbox_padder = QLabel("")
+        checkbox_container.addWidget(self.pattern_checkbox_padder)
+        #checkbox_container.addStretch(1)
+        layout.addLayout(checkbox_container)
+        self.row_layout = layout
+        self.setLayout(layout)
+
+    def open_color_picker(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.color_picker.setStyleSheet(f'background-color: {color.name()};')
+
+    def set_row_type(self, row_type):
+        if row_type == "full":
+            self.material_dropdown.setVisible(True)
+            self.pattern_checkbox.setVisible(True)
+            self.pattern_checkbox_padder.setVisible(True)
+        elif row_type == "color_only":
+            self.material_dropdown.setVisible(False)
+            self.pattern_checkbox.setVisible(False)
+            self.pattern_checkbox_padder.setVisible(False)
+
+    def import_settings(self, settings):
+        self.color_picker.setStyleSheet(f'background-color: {settings.color.name()};')
+        if settings.material:
+            if settings.material.isnumeric():
+                index = self.material_dropdown.findText(f"{settings.material} - ", flags=Qt.MatchFlag.MatchContains)
+            else:
+                index = self.material_dropdown.findText(settings.material, flags=Qt.MatchFlag.MatchContains)
+            if index >= 0:
+                self.material_dropdown.setCurrentIndex(index)
+        self.pattern_checkbox.setChecked(settings.pattern)
+
+    def export_settings(self):
+        return ColorRowData(
+            self.label.text(),
+            QColor(self.color_picker.palette().button().color()),
+            self.material_dropdown.currentText(),
+            self.pattern_checkbox.isChecked()
+        )
+
+class ColoringSection(QWidget):
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # Add a label with the section name
+        self.name_label = QLabel(self.name)
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label.setStyleSheet("font-weight: bold;")
+        new_font = self.name_label.font()
+        new_font.setPointSize(12)
+        self.name_label.setFont(new_font)
+        layout.addWidget(self.name_label)
+
+        coloring_line = QFrame()
+        coloring_line.setFrameShape(QFrame.Shape.HLine)
+        coloring_line.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(coloring_line)
+
+        coloring_layout = QVBoxLayout()
+
+        # Column labels
+        labels_layout = QHBoxLayout()
+        labels_layout.addWidget(QLabel('Color name'))
+        labels_layout.addWidget(QLabel('Color picker'))
+        labels_layout.addWidget(QLabel('Material'))
+        labels_layout.addWidget(QLabel('Print Pattern'))
+        coloring_layout.addLayout(labels_layout)
+
+        self.color_rows = []
+
+        # Six rows of color pickers
+        for i, color_label in enumerate(color_labels):
+            color_row = ColorRow(color_label)
+            if i == len(color_labels) - 1:  # Last row
+                color_row.set_row_type("color_only")
+                color_row.row_layout.addWidget(QLabel(""))
+                color_row.row_layout.addWidget(QLabel(""))
+                #color_row.row_layout.addStretch()
+            else:
+                color_row.set_row_type("full")
+            coloring_layout.addWidget(color_row)
+            self.color_rows.append(color_row)
+
+        # Pattern and Pattern Size dropdowns
+        hbox_wrap = QHBoxLayout()
+        pattern_label = QLabel("Pattern")
+        pattern_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        hbox_wrap.addStretch()
+        hbox_wrap.addWidget(pattern_label)
+        hbox_wrap.addStretch()
+        coloring_layout.addLayout(hbox_wrap)
+
+
+        pattern_layout = QHBoxLayout()
+        pattern_layout.addWidget(QLabel('Pattern number'))
+        self.pattern_dropdown = QComboBox()
+        self.pattern_dropdown.addItems(pattern_list)  # Dummy options
+        pattern_layout.addWidget(self.pattern_dropdown)
+        pattern_layout.addWidget(QLabel('Pattern Size'))
+        self.pattern_size_dropdown = QComboBox()
+        self.pattern_size_dropdown.addItems(pattern_size_list)  # Dummy options
+        pattern_layout.addWidget(self.pattern_size_dropdown)
+        coloring_layout.addLayout(pattern_layout)
+
+        # Two rows with two color pickers each
+        self.pattern_color_rows = []
+        for i in range(2):
+            color_pickers_layout = QHBoxLayout()
+            for j in range(2):
+                color_row = ColorRow(f"Color {(i + 1) + (j + 1)}")
+                color_row.set_row_type("color_only")
+                color_pickers_layout.addWidget(color_row)
+                self.pattern_color_rows.append(color_row)
+            coloring_layout.addLayout(color_pickers_layout)
+
+        # Weathering dropdown
+        weathering_layout = QHBoxLayout()
+        weathering_layout.addWidget(QLabel('Weathering:'))
+        self.weathering_dropdown = QComboBox()
+        self.weathering_dropdown.addItems(weathering_list)  # Dummy options
+        weathering_layout.addWidget(self.weathering_dropdown)
+        weathering_layout.addWidget(QLabel(""))
+        weathering_layout.addWidget(QLabel(""))
+        coloring_layout.addLayout(weathering_layout)
+
+        layout.addLayout(coloring_layout)
+
+        self.setLayout(layout)
+
+    def open_color_picker(self, button):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            button.setStyleSheet(f'background-color: {color.name()};')
+
+    def import_settings(self, settings):
+        for i, color_row_settings in enumerate(settings.color_rows):
+            if i < len(self.color_rows):
+                self.color_rows[i].import_settings(color_row_settings)
+
+        index = self.pattern_dropdown.findText(str(settings.pattern_number), flags=Qt.MatchFlag.MatchContains)
+        if index >= 0:
+            self.pattern_dropdown.setCurrentIndex(index)
+
+        index = self.pattern_size_dropdown.findText(str(settings.pattern_size), flags=Qt.MatchFlag.MatchContains)
+        if index >= 0:
+            self.pattern_size_dropdown.setCurrentIndex(index)
+
+        for i, color in enumerate(settings.pattern_colors):
+            if i < len(self.pattern_color_rows):
+                self.pattern_color_rows[i].import_settings(ColorRowData(f"Pattern Color {i+1}", color))
+
+        index = self.weathering_dropdown.findText(str(settings.weathering), flags=Qt.MatchFlag.MatchContains)
+        if index >= 0:
+            self.weathering_dropdown.setCurrentIndex(index)
+
+    def export_settings(self):
+        settings = ColoringSectionData(self.name_label.text())
+        for color_row in self.color_rows:
+            settings.color_rows.append(color_row.export_settings())
+
+        settings.pattern_size = self.pattern_size_dropdown.currentText()
+        settings.pattern_number = self.pattern_dropdown.currentText()
+
+        for pattern_color_row in self.pattern_color_rows:
+            settings.pattern_colors.append(QColor(pattern_color_row.color_picker.palette().button().color()))
+
+        settings.weathering = self.weathering_dropdown.currentText()
+
+        return settings
 
 def save_id_to_equipment_id(save_id_bytes):
     """
@@ -108,9 +465,29 @@ def process_assemble_bytes(assemble_bytes):
 
     return parts, weapons
 
+def process_coloring_bytes(coloring_bytes):
+    coloring_sections = []
+    section_index = 0
+
+    # Process the color sets
+    for i in range(14):
+        start = i * 68
+        end = start + 68
+        color_set_bytes = coloring_bytes[start:end]
+
+        if i in [6, 7, 9, 10, 11]:
+            continue  # Skip the unknown sections
+        coloring_section = ColoringSectionData.from_bytes(color_section_labels[section_index], color_set_bytes)
+        coloring_sections.append(coloring_section)
+        section_index += 1
+
+    return coloring_sections
+
 class DesignDecompressor(QWidget):
     def __init__(self):
         super().__init__()
+        self.current_section = 0
+        self.coloring_sections:List[ColoringSection] = []
         self.initUI()
 
     def initUI(self):
@@ -118,20 +495,6 @@ class DesignDecompressor(QWidget):
         self.setGeometry(100, 100, 400, 400)  # Adjust the window size as needed
 
         layout = QVBoxLayout()
-
-        # Design File row
-        design_file_layout = QHBoxLayout()
-        design_file_label = QLabel('Design File:')
-        self.design_file_input = QLineEdit()
-        design_file_browse_button = QPushButton('Browse')
-        design_file_browse_button.clicked.connect(self.browse_design_file)
-        design_file_load_button = QPushButton('Load')
-        design_file_load_button.clicked.connect(self.load_design_file)
-        design_file_layout.addWidget(design_file_label)
-        design_file_layout.addWidget(self.design_file_input)
-        design_file_layout.addWidget(design_file_browse_button)
-        design_file_layout.addWidget(design_file_load_button)
-        layout.addLayout(design_file_layout)
 
         # AC Data section
         ac_data_label = QLabel('AC Data')
@@ -254,12 +617,135 @@ class DesignDecompressor(QWidget):
         layout.addLayout(weapons_layout)
         self.load_weapons()
 
-        # Save button
+
+
+        # Navigation row
+        nav_layout = QHBoxLayout()
+        self.prev_button = QPushButton('←')
+        self.prev_button.clicked.connect(self.prev_section)
+        self.prev_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['primary_color']}")
+        self.next_button = QPushButton('→')
+        self.next_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['toggle_color']}")
+
+        self.next_button.clicked.connect(self.next_section)
+
+        coloring_label = QLabel('Colors')
+        coloring_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        coloring_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        nav_layout.addWidget(self.prev_button)
+        nav_layout.addWidget(coloring_label)
+        nav_layout.addWidget(self.next_button)
+        layout.addLayout(nav_layout)
+
+        copy_all_layout = QHBoxLayout()
+        copy_all_layout.addWidget(QLabel(""))
+        self.copy_to_all_button = QPushButton('Copy to All')
+        self.copy_to_all_button.clicked.connect(self.copy_to_all_sections)
+        copy_all_layout.addWidget(self.copy_to_all_button)
+        copy_all_layout.addWidget(QLabel(""))
+        layout.addLayout(copy_all_layout)
+        # Create coloring sections
+        self.coloring_stack = QStackedWidget()
+        for name in color_section_labels:
+            section = ColoringSection(name)
+            self.coloring_sections.append(section)
+            self.coloring_stack.addWidget(section)
+        layout.addWidget(self.coloring_stack)
+
+        self.editor_widget = QWidget()
+        self.editor_widget.setLayout(layout)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)  # Make the scroll area resizable
+        self.scroll_area.setWidget(self.editor_widget)
+        self.root_layout = QVBoxLayout()
+        self.root_layout.addWidget(self.scroll_area)
+
+        # Bottom row
+        bottom_row_layout = QHBoxLayout()
+        design_file_label = QLabel('Design File:')
+        self.design_file_input = QLineEdit()
+        design_file_browse_button = QPushButton('Browse')
+        design_file_browse_button.clicked.connect(self.browse_design_file)
+        design_file_load_button = QPushButton('Load')
+        design_file_load_button.clicked.connect(self.load_design_file)
+        bottom_row_layout.addWidget(design_file_label)
+        bottom_row_layout.addWidget(self.design_file_input)
+        bottom_row_layout.addWidget(design_file_browse_button)
+        bottom_row_layout.addWidget(design_file_load_button)
+        bottom_row_layout.addStretch()
         save_button = QPushButton('Save')
         save_button.clicked.connect(self.save_file)
-        layout.addWidget(save_button)
+        bottom_row_layout.addWidget(save_button)
+        self.root_layout.addLayout(bottom_row_layout)
 
-        self.setLayout(layout)
+        self.setLayout(self.root_layout)
+        self.fix_size()
+
+    def fix_size(self):
+        # Get screen size
+        screen = QtWidgets.QApplication.primaryScreen()
+        self.adjustSize()
+
+        if not hasattr(self, "editor_widget"):
+            return  # Whoops, too early.
+
+        # Now get the sizeHint of the settings_widget and compare it with the screen size
+
+        recommended_size = self.editor_widget.sizeHint()
+        screen_size = screen.availableGeometry()
+        screen_size = QtCore.QSize(int(screen_size.width() * 8 / 10), int(screen_size.height() * 8 / 10))
+
+        # Calculate the size to set (accounting for the scroll bars)
+        size_to_set = QtCore.QSize(
+            min(recommended_size.width() + self.scroll_area.verticalScrollBar().width() * 3, screen_size.width()),
+            min(recommended_size.height() + self.scroll_area.horizontalScrollBar().height(), screen_size.height())
+        )
+
+        # Set the size of the dialog
+        self.resize(size_to_set)
+
+    def prev_section(self):
+        if self.current_section > 0:
+            self.current_section -= 1
+            self.update_section()
+
+    def next_section(self):
+        if self.current_section < 8:
+            self.current_section += 1
+            self.update_section()
+
+    def update_section(self):
+        self.coloring_stack.setCurrentIndex(self.current_section)
+        if self.current_section > 0:
+            self.prev_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['toggle_color']}")
+        else:
+            self.prev_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['primary_color']}")
+
+        if self.current_section < len(color_section_labels) - 1:
+            self.next_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['toggle_color']}")
+        else:
+            self.next_button.setStyleSheet(f"font-weight: bold; background-color: {colors_dict['primary_color']}")
+        self.prev_button.setEnabled(self.current_section > 0)
+        self.next_button.setEnabled(self.current_section < len(color_section_labels) - 1)
+
+    def copy_to_all_sections(self):
+        current_section = self.coloring_sections[self.current_section]
+        settings = current_section.export_settings()
+
+        for i, section in enumerate(self.coloring_sections):
+            if i != self.current_section:
+                # Create a new settings object with the target section's name
+                new_settings = ColoringSectionData(section.name)
+                # Copy all other settings from the current section
+                new_settings.color_rows = settings.color_rows
+                new_settings.pattern_number = settings.pattern_number
+                new_settings.pattern_size = settings.pattern_size
+                new_settings.pattern_colors = settings.pattern_colors
+                new_settings.weathering = settings.weathering
+
+                section.import_settings(new_settings)
+
+        QMessageBox.information(self, "Copy Complete", "Settings copied to all sections.")
 
     def load_parts(self):
         part_files = [
@@ -406,6 +892,11 @@ class DesignDecompressor(QWidget):
         else:
             print("Assemble section not found.")
 
+        _, coloring_bytes = self.read_section_value(data, b'Coloring', b'UserImage')
+        color_datas = process_coloring_bytes(coloring_bytes)
+        for i in range(len(self.coloring_sections)):
+            self.coloring_sections[i].import_settings(color_datas[i])
+
     def convert_to_string(self, value_bytes):
         if value_bytes is not None:
             # Strip trailing zero bytes
@@ -428,7 +919,6 @@ class DesignDecompressor(QWidget):
 
         chunk_header_bytes = data[start_index:start_index + 0x20]
         chunk_header = ChunkHeader.from_bytes(chunk_header_bytes)
-        print(chunk_header)
         value_start = start_index + 0x20
         value_bytes = data[value_start:end_index]
 
@@ -452,12 +942,12 @@ class DesignDecompressor(QWidget):
                     raise ValueError("Decompression failed.")
 
             # Find the start of the "Coloring" section
-            coloring_start = original_data.find(b'Coloring')
-            if coloring_start == -1:
-                raise ValueError("Coloring section not found in the original file.")
+            end_start = original_data.find(b'UserImage')
+            if end_start == -1:
+                raise ValueError("End section not found in the original file.")
 
             # Store everything starting at the "Coloring" section
-            coloring_data = original_data[coloring_start:]
+            end_data = original_data[end_start:]
 
             # Create a BytesIO object to store the modified data
             modified_data = BytesIO()
@@ -530,8 +1020,27 @@ class DesignDecompressor(QWidget):
             modified_data.write(assemble_header.to_bytes())
             modified_data.write(assemble_data.getvalue())
 
-            # Write the stored "Coloring" data
-            modified_data.write(coloring_data)
+            # Write the color sets
+            color_set_data = BytesIO()
+            for i, section in enumerate(self.coloring_sections):
+                section_data_bytes = section.export_settings().to_bytes()
+                color_set_data.write(section_data_bytes)
+                # Write dummy data for unknown sections
+                if i == 4:  # After Right weapon
+                    for _ in range(2):
+                        color_set_data.write(section_data_bytes)  # Repeat Right weapon data
+                elif i == 7:  # After Left weapon
+                    for _ in range(3):
+                        color_set_data.write(section_data_bytes)  # Repeat Left weapon data
+
+            # Update the "Coloring" header with the actual length
+            coloring_header = ChunkHeader('Coloring', len(color_set_data.getvalue()), 3)
+            modified_data.write(coloring_header.to_bytes())
+            # Write the color set data
+            modified_data.write(color_set_data.getvalue())
+
+            # Write the stored end data (UserImage and beyond)
+            modified_data.write(end_data)
 
             # Save the modified data to the selected file path
             with open(file_path, 'wb') as file:
