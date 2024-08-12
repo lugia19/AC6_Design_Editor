@@ -3,8 +3,9 @@ import sys
 import os
 
 import keyring
+from PyQt6 import QtWidgets, QtCore, QtGui
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QListWidget, QFileDialog, QMessageBox, QLineEdit, QLabel, QDialog)
+                             QPushButton, QListWidget, QFileDialog, QMessageBox, QLineEdit, QLabel, QDialog, QAbstractItemView)
 from PyQt6.QtCore import QProcess
 
 class ConfigDialog(QDialog):
@@ -118,18 +119,46 @@ class RepackUI(QWidget):
         self.restart_repack_btn = QPushButton('Repack And Restart')
         self.restart_repack_btn.clicked.connect(self.restart_and_repack)
         layout.addWidget(self.restart_repack_btn)
-
+        self.load_existing_directories()
         self.setLayout(layout)
         self.setWindowTitle('AC6 Repack Helper')
         self.show()
+
     def add_directory(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory")
-        if dir_path:
-            self.dir_list.addItem(dir_path)
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setWindowTitle('Choose Directories')
+        dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.Directory)
+        for view in dialog.findChildren((QtWidgets.QListView, QtWidgets.QTreeView)):
+            if isinstance(view.model(), QtGui.QFileSystemModel):
+                view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            selected_directories = dialog.selectedFiles()
+            for directory in selected_directories:
+                self.dir_list.addItem(directory)
+        dialog.deleteLater()
 
     def remove_directory(self):
-        if self.dir_list.count() > 0:
-            self.dir_list.takeItem(self.dir_list.count() - 1)
+        current_row = self.dir_list.currentRow()
+        if current_row >= 0:
+            self.dir_list.takeItem(current_row)
+
+    def load_existing_directories(self):
+        stored_directories = keyring.get_password("AC6Repack", "selected_directories")
+        if stored_directories:
+            directories = stored_directories.split(';')
+            for directory in directories:
+                self.dir_list.addItem(directory)
+
+    def save_selected_directories(self):
+        selected_directories = []
+        for index in range(self.dir_list.count()):
+            selected_directories.append(self.dir_list.item(index).text())
+        keyring.set_password("AC6Repack", "selected_directories", ';'.join(selected_directories))
+
+    def closeEvent(self, event):
+        self.save_selected_directories()
+        event.accept()
 
     def run_command(self, args, working_dir=None):
         if isinstance(args, str):
@@ -221,7 +250,7 @@ if __name__ == '__main__':
         border: 1px solid {hover_color};
     }
 
-    QComboBox QAbstractItemView {
+    QAbstractItemView {
         background-color: {secondary_color};
         color: {text_color};
     }
