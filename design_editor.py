@@ -212,6 +212,7 @@ class ColorRow(QWidget):
         layout.addWidget(self.label)
 
         self.color_picker = QPushButton()
+        self.color_picker.setStyleSheet(f'background-color: gray;')
         self.color_picker.clicked.connect(self.open_color_picker)
         layout.addWidget(self.color_picker)
 
@@ -932,22 +933,24 @@ class DesignDecompressor(QWidget):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'All Files (*)')
         if file_path:
             # Load the original file
-            with open(self.design_file_input.text(), 'rb') as file:
-                original_data = file.read()
+            end_data = None
+            if self.design_file_input.text() != "":
+                with open(self.design_file_input.text(), 'rb') as file:
+                    original_data = file.read()
 
-            # Check if the file needs to be decompressed
-            if original_data.startswith(b'ASMC'):
-                original_data = self.try_decompress(original_data)
-                if original_data is None:
-                    raise ValueError("Decompression failed.")
+                # Check if the file needs to be decompressed
+                if original_data.startswith(b'ASMC'):
+                    original_data = self.try_decompress(original_data)
+                    if original_data is None:
+                        raise ValueError("Decompression failed.")
 
-            # Find the start of the "Coloring" section
-            end_start = original_data.find(b'UserImage')
-            if end_start == -1:
-                raise ValueError("End section not found in the original file.")
+                # Find the start of the "Coloring" section
+                end_start = original_data.find(b'UserImage')
+                if end_start == -1:
+                    raise ValueError("End section not found in the original file.")
 
-            # Store everything starting at the "Coloring" section
-            end_data = original_data[end_start:]
+                # Store everything starting at the "Coloring" section
+                end_data = original_data[end_start:]
 
             # Create a BytesIO object to store the modified data
             modified_data = BytesIO()
@@ -1040,8 +1043,45 @@ class DesignDecompressor(QWidget):
             modified_data.write(color_set_data.getvalue())
 
             # Write the stored end data (UserImage and beyond)
-            modified_data.write(end_data)
+            if end_data:
+                modified_data.write(end_data)
+            else:
+                # Create empty chunks for UserImage and ----  end  ----
+                userimage_header = ChunkHeader("UserImage", 4, 0)
+                modified_data.write(userimage_header.to_bytes())
+                modified_data.write(b"\x00\x00\x00\x00")
 
+                # Create Decal chunk
+                decal_data = BytesIO()
+                decal_slot_count = 5
+                for k in range(decal_slot_count):
+                    decal_count = 1
+                    decal_data.write(struct.pack('<I', decal_count))
+                    for j in range(decal_count):
+                        decal_data.write(struct.pack('<I', 0))  # imageId
+                        decal_data.write(struct.pack('<fffffffff', 0, 0, 0, 0, 0, 0, 0, 0, 0))  # unk04 to unk24
+                        decal_data.write(struct.pack('<II', 0, 0))  # unk28 and unk2c
+                        decal_data.write(struct.pack('<f', 0))  # unk30
+                        decal_data.write(struct.pack('<HHI', 0, 0, 0))  # unk34, unk36, unk38
+                        decal_data.write(struct.pack('<BBBB', 0, 0, 0, 0))  # unk3c, unk3d, unk3e, unk3f
+                decal_header = ChunkHeader('Decal', len(decal_data.getvalue()), 1)
+                modified_data.write(decal_header.to_bytes())
+                modified_data.write(decal_data.getvalue())
+
+                # Create Marking chunk
+                marking_data = BytesIO()
+                marking_version = 2
+                slot_count = 17
+                decal_ids = [0] * slot_count
+                use_emblem = [0] * slot_count
+                marking_data.write(struct.pack(f'<{slot_count}I', *decal_ids))
+                marking_data.write(struct.pack(f'<{slot_count}B', *use_emblem))
+                marking_header = ChunkHeader('Marking', len(marking_data.getvalue()), marking_version)
+                modified_data.write(marking_header.to_bytes())
+                modified_data.write(marking_data.getvalue())
+
+                end_header = ChunkHeader("----  end  ----", 0, 0)
+                modified_data.write(end_header.to_bytes())
             # Save the modified data to the selected file path
             with open(file_path, 'wb') as file:
                 file.write(modified_data.getvalue())
