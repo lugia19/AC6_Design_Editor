@@ -29,6 +29,9 @@ materials_list = []
 for i in range(36):
     materials_list.append(f"{i} - Reflectiveness: {round(math.floor(i/6)*0.2, 2)} Luster: {round((i % 6) * 0.2,2)}")
 
+device_materials_list = []
+for i in range(10):
+    device_materials_list.append(f"{90+i} - Brightness level {i}")
 
 pattern_list = ["Pattern 0 (None)"]
 for i in range(29):
@@ -217,7 +220,7 @@ class ColorRow(QWidget):
         layout.addWidget(self.color_picker)
 
         self.material_dropdown = QComboBox()
-        self.material_dropdown.addItems(materials_list)  # Dummy options
+        self.material_dropdown.addItems(materials_list)
         layout.addWidget(self.material_dropdown)
 
         checkbox_container = QHBoxLayout()
@@ -240,7 +243,12 @@ class ColorRow(QWidget):
             self.material_dropdown.setVisible(True)
             self.pattern_checkbox.setVisible(True)
             self.pattern_checkbox_padder.setVisible(True)
-        elif row_type == "color_only":
+        elif row_type == "device":
+            self.material_dropdown.clear()
+            self.material_dropdown.addItems(device_materials_list)
+            self.pattern_checkbox.setVisible(False)
+            self.pattern_checkbox_padder.setVisible(False)
+        elif row_type == "colors-only":
             self.material_dropdown.setVisible(False)
             self.pattern_checkbox.setVisible(False)
             self.pattern_checkbox_padder.setVisible(False)
@@ -303,10 +311,8 @@ class ColoringSection(QWidget):
         for i, color_label in enumerate(color_labels):
             color_row = ColorRow(color_label)
             if i == len(color_labels) - 1:  # Last row
-                color_row.set_row_type("color_only")
+                color_row.set_row_type("device")
                 color_row.row_layout.addWidget(QLabel(""))
-                color_row.row_layout.addWidget(QLabel(""))
-                #color_row.row_layout.addStretch()
             else:
                 color_row.set_row_type("full")
             coloring_layout.addWidget(color_row)
@@ -339,7 +345,7 @@ class ColoringSection(QWidget):
             color_pickers_layout = QHBoxLayout()
             for j in range(2):
                 color_row = ColorRow(f"Color {(i + 1) + (j + 1)}")
-                color_row.set_row_type("color_only")
+                color_row.set_row_type("colors-only")
                 color_pickers_layout.addWidget(color_row)
                 self.pattern_color_rows.append(color_row)
             coloring_layout.addLayout(color_pickers_layout)
