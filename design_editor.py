@@ -720,7 +720,7 @@ class DesignDecompressor(QWidget):
         design_file_load_button = QPushButton('Load')
         design_file_load_button.clicked.connect(self.load_design_file)
 
-        import_regbin_button = QPushButton('Import regbin')
+        import_regbin_button = QPushButton('Import mod parts')
         import_regbin_button.clicked.connect(self.import_regbin)
 
         bottom_row_layout.addWidget(design_file_label)
@@ -981,6 +981,49 @@ class DesignDecompressor(QWidget):
                                 else:
                                     # Add the part to the appropriate category
                                     parts_data['Internals'][category].append({'ID': part_id, 'Name': part_name})
+
+                # Check if msg/engus/item.msgbnd.dcx exists
+                msg_folder_path = os.path.join(os.path.dirname(file_path), 'msg')
+                if os.path.exists(msg_folder_path):
+                    shutil.copytree(msg_folder_path, os.path.join(temp_dir, 'msg'))
+
+                msg_file_path = os.path.join(temp_dir, 'msg', 'engus', 'item.msgbnd.dcx')
+                if os.path.exists(msg_file_path):
+                    # Unpack item.msgbnd.dcx
+                    run_witchy(msg_file_path, True)
+
+                    # Dictionary to map fmg.xml files to their corresponding categories
+                    fmg_category_map = {
+                        'FCS名.fmg.xml': 'FCS',
+                        'ジェネレーター名.fmg.xml': 'Generator',
+                        'ブースター名.fmg.xml': 'Booster',
+                        '武器名.fmg.xml': 'Weapons',
+                        '防具名.fmg.xml': 'Protectors'
+                    }
+
+                    # Process each fmg.xml file
+                    def update_part_name(part, texts):
+                        if not part['Name']:
+                            for text in texts:
+                                if text['@id'] == part['ID']:
+                                    part['Name'] = text['#text']
+                                    break
+
+                    for fmg_file, category in fmg_category_map.items():
+                        fmg_path = os.path.join(os.path.dirname(msg_file_path), 'item-msgbnd-dcx', fmg_file)
+                        if os.path.exists(fmg_path):
+                            with open(fmg_path, 'r', encoding='utf-8') as fmg_file:
+                                fmg_content = fmg_file.read()
+                                fmg_data = xmltodict.parse(fmg_content)
+                                texts = fmg_data['fmg']["entries"]['text']
+
+                                if category == 'Weapons' or category == "Protectors":
+                                    for item_category in parts_data[category].values():
+                                        for part in item_category:
+                                            update_part_name(part, texts)
+                                else:
+                                    for part in parts_data['Internals'][category]:
+                                        update_part_name(part, texts)
 
                 with open(resource_path("parts.json"), 'w') as file:
                     json.dump(parts_data, file, indent=4)
