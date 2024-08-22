@@ -1,9 +1,20 @@
+import copy
+import hashlib
+import json
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import zipfile
 import zlib, struct
-from typing import List
 
+import platformdirs as platformdirs
+import requests
+from typing import List, Union
+
+import xmltodict
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QColor
@@ -13,6 +24,8 @@ from PyQt6.QtCore import Qt, QSize, QRect
 from PyQt6.QtGui import QPainter, QPainterPath, QColor
 from PyQt6.QtWidgets import QAbstractButton, QSizePolicy
 from io import BytesIO
+
+from customWidgets import DownloadDialog
 
 # Define the category offsets
 CATEGORY_OFFSETS = {
@@ -40,6 +53,14 @@ pattern_size_list = ['0 - Small', '1 - Medium', '2 - Large']
 weathering_list = ['Weathered 0 (None)']
 for i in range(23):
     weathering_list.append(f"Weathered {i}")
+
+witchy_path = None
+def run_witchy(path:str, recursive:bool=False):
+    #args = ["-p", f"\"{path}\""]
+    args = [witchy_path, "-s", path]
+    if recursive:
+        args.insert(2, "-c")
+    subprocess.run(args, check=True, capture_output=True, text=True)
 
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -546,6 +567,31 @@ class DesignDecompressor(QWidget):
         parts_line.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(parts_line)
 
+        if not os.path.exists(resource_path("parts.json")):
+            parts_base = {
+                "Protectors": {
+                    "Head": [],
+                    "Core": [],
+                    "Arms": [],
+                    "Legs": []
+                },
+                "Internals": {
+                    "Booster": [],
+                    "Generator": [],
+                    "FCS": []
+                },
+                "Weapons": {
+                    "LHand": [],
+                    "RHand": [],
+                    "LBack": [],
+                    "RBack": [],
+                    "CExpansion": []
+                }
+            }
+            with open(resource_path("parts.json"), "w") as file:
+                json.dump(parts_base, file)
+
+
         parts_layout = QVBoxLayout()
         part_rows = [['Head', 'Core'],
                      ['Arms', 'Legs'],
@@ -575,7 +621,6 @@ class DesignDecompressor(QWidget):
             #row_layout.addStretch(1)
             parts_layout.addLayout(row_layout)
         layout.addLayout(parts_layout)
-        self.load_parts()
 
         # Weapons section
         weapons_label = QLabel('Weapons')
@@ -622,9 +667,8 @@ class DesignDecompressor(QWidget):
             #row_layout.addStretch(1)
             weapons_layout.addLayout(row_layout)
         layout.addLayout(weapons_layout)
-        self.load_weapons()
 
-
+        self.import_regbin(resource_path("data/regulation.bin"))
 
         # Navigation row
         nav_layout = QHBoxLayout()
@@ -675,10 +719,18 @@ class DesignDecompressor(QWidget):
         design_file_browse_button.clicked.connect(self.browse_design_file)
         design_file_load_button = QPushButton('Load')
         design_file_load_button.clicked.connect(self.load_design_file)
+
+        import_regbin_button = QPushButton('Import regbin')
+        import_regbin_button.clicked.connect(self.import_regbin)
+
         bottom_row_layout.addWidget(design_file_label)
         bottom_row_layout.addWidget(self.design_file_input)
         bottom_row_layout.addWidget(design_file_browse_button)
         bottom_row_layout.addWidget(design_file_load_button)
+        bottom_row_layout.addWidget(QLabel(""))
+
+        bottom_row_layout.addWidget(import_regbin_button)
+
         bottom_row_layout.addStretch()
         save_button = QPushButton('Save')
         save_button.clicked.connect(self.save_file)
@@ -755,47 +807,187 @@ class DesignDecompressor(QWidget):
         QMessageBox.information(self, "Copy Complete", "Settings copied to all sections.")
 
     def load_parts(self):
-        part_files = [
-            "data/EquipParamProtector.txt",
-            "data/EquipParamProtector.txt",
-            "data/EquipParamProtector.txt",
-            "data/EquipParamProtector.txt",
-            "data/EquipParamBooster.txt",
-            "data/EquipParamGenerator.txt",
-            "data/EquipParamFcs.txt"
-        ]
+        protector_types = ["Head", "Core", "Arms", "Legs"]
+        inner_types = ["Booster", "Generator", "FCS"]
 
-        part_keywords = [
-            "HEAD",
-            "CORE",
-            "ARMS",
-            "LEGS",
-            "",
-            "",
-            ""
-        ]
-
-        cwd = os.getcwd()
-        for i, part_field in enumerate(self.part_fields):
-            if i < len(part_files):
-                with open(resource_path(part_files[i]), 'r') as file:
-                    parts = [line.strip() for line in file if part_keywords[i] in line]
-                    part_field.addItems(parts)
+        with open(resource_path("parts.json"), 'r') as file:
+            data = json.load(file)
+            protectors = data["Protectors"]
+            internals = data["Internals"]
+            for i, part_field in enumerate(self.part_fields):
+                part_field.clear()
+                if i < 4:  # Head, Core, Arms, Legs
+                    part_type = protector_types[i]
+                    filtered_parts = [f"{part['ID']} {part['Name']}" for part in protectors[part_type]]
+                else:  # Booster, Generator, FCS
+                    part_type = inner_types[i-4]
+                    filtered_parts = [f"{part['ID']} {part['Name']}" for part in internals[part_type]]
+                part_field.addItems(filtered_parts)
 
     def load_weapons(self):
-
         cwd = os.getcwd()
-        for i, weapon_field in enumerate(self.weapon_fields):
-            with open(resource_path("data/EquipParamWeapon.txt"), 'r') as file:
-                weapons = [line.strip() for line in file]
-                if i == 0 or i == 2:
-                    weapons = [weapon for weapon in weapons if "(Right)" not in weapon]
-                if i == 1 or i == 3:
-                    weapons = [weapon for weapon in weapons if "(Right)" in weapon or "Fists" in weapon]
-                if i == 4:
-                    weapons = [weapon for weapon in weapons if "EXPANSION" in weapon]
+        slots = ["LHand", "RHand", "LBack", "RBack", "CExpansion"]
+        with open(resource_path("parts.json"), 'r') as file:
+            data = json.load(file)
+            weapons = data["Weapons"]
+            for i, weapon_field in enumerate(self.weapon_fields):
+                weapon_field.clear()
+                weapon_type = slots[i]
+                filtered_weapons = [f"{weapon['ID']} {weapon['Name']}" for weapon in weapons[weapon_type]]
                 weapon_field.addItem("-1 Empty")
-                weapon_field.addItems(weapons)
+                weapon_field.addItems(filtered_weapons)
+
+    def import_regbin(self, file_override=None):
+        if file_override:
+            file_path = file_override
+            #Don't bother re-parsing it if it's the same...
+            hash_path = os.path.join(os.path.dirname(file_path), "regbin_hash.txt")
+            with open(file_path, "rb") as regbin:
+                new_hash = hashlib.sha1(regbin.read()).hexdigest().strip()
+            if os.path.exists(hash_path):
+                old_hash = open(hash_path, "r").read().strip()
+                if new_hash == old_hash:
+                    self.load_parts()
+                    self.load_weapons()
+                    return
+                else:
+                    open(hash_path, "w").write(new_hash)
+            else:
+                open(hash_path, "w").write(new_hash)
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(self, 'Select regulation.bin', '', 'regulation.bin (regulation.bin)')
+        if file_path:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                with open(resource_path("parts.json"), 'r') as file:
+                    parts_data = json.load(file)
+                # Copy the regulation.bin file to the temporary directory
+                shutil.copy(file_path, os.path.join(temp_dir, 'regulation.bin'))
+
+                # Unpack regulation.bin
+                run_witchy(os.path.join(temp_dir, 'regulation.bin'), False)
+
+                # List of .param files to process
+                param_files = [
+                    'EquipParamProtector.param',
+                    'EquipParamWeapon.param',
+                    'EquipParamFcs.param',
+                    'EquipParamGenerator.param',
+                    'EquipParamBooster.param'
+                ]
+
+                for param_file in param_files:
+                    param_path = os.path.join(temp_dir, 'regulation-bin', param_file)
+                    xml_path = f'{param_path}.xml'
+
+                    # Unpack the .param file
+                    run_witchy(param_path, False)
+
+                    # Open and process the generated XML file
+                    with open(xml_path, 'r') as xml_file:
+                        xml_content = xml_file.read()
+                        xml_data = xmltodict.parse(xml_content)
+                        rows = xml_data['param']['rows']['row']
+                        if param_file == "EquipParamProtector.param":
+                            for row in rows:
+                                part_id = row['@id']
+                                part_name = row.get('@paramdexName', '')
+
+                                part_types = []
+                                if row.get('@headEquip') == '1':
+                                    part_types.append('Head')
+                                if row.get('@bodyEquip') == '1':
+                                    part_types.append('Core')
+                                if row.get('@armEquip') == '1':
+                                    part_types.append('Arms')
+                                if row.get('@legEquip') == '1':
+                                    part_types.append('Legs')
+
+                                # Check if the part already exists in parts_data
+                                existing_part = None
+                                for category in parts_data['Protectors'].values():
+                                    for part in category:
+                                        if part['ID'] == part_id:
+                                            existing_part = part
+                                            break
+                                    if existing_part:
+                                        break
+
+                                if existing_part:
+                                    # Update the part name
+                                    existing_part['Name'] = part_name
+                                    # Remove the part from categories where it shouldn't be
+                                    for category, parts in parts_data['Protectors'].items():
+                                        if category not in part_types and existing_part in parts:
+                                            parts.remove(existing_part)
+                                else:
+                                    # Add the part to the appropriate categories
+                                    for part_type in part_types:
+                                        parts_data['Protectors'][part_type].append({'ID': part_id, 'Name': part_name})
+
+                        elif param_file == "EquipParamWeapon.param":
+                            for row in rows:
+                                part_id = row['@id']
+                                part_name = row.get('@paramdexName', '')
+
+                                part_types = []
+                                if row.get('@equipFrontRightSlot') == '1':
+                                    part_types.append('RHand')
+                                if row.get('@equipFrontLeftSlot') == '1':
+                                    part_types.append('LHand')
+                                if row.get('@equipBackRightSlot') == '1':
+                                    part_types.append('RBack')
+                                if row.get('@equipBackLeftSlot') == '1':
+                                    part_types.append('LBack')
+
+                                # Check if the part already exists in parts_data
+                                existing_part = None
+                                for category in parts_data['Weapons'].values():
+                                    for part in category:
+                                        if part['ID'] == part_id:
+                                            existing_part = part
+                                            break
+                                    if existing_part:
+                                        break
+
+                                if existing_part:
+                                    # Update the part name
+                                    existing_part['Name'] = part_name
+                                    # Remove the part from categories where it shouldn't be
+                                    for category, parts in parts_data['Weapons'].items():
+                                        if category not in part_types and existing_part in parts:
+                                            parts.remove(existing_part)
+                                else:
+                                    # Add the part to the appropriate categories
+                                    for part_type in part_types:
+                                        parts_data['Weapons'][part_type].append({'ID': part_id, 'Name': part_name})
+
+                        elif param_file in ["EquipParamFcs.param", "EquipParamGenerator.param", "EquipParamBooster.param"]:
+                            category = param_file.replace("EquipParam", "").replace(".param", "")
+                            if category.upper() == "FCS": category = category.upper()
+                            for row in rows:
+                                part_id = row['@id']
+                                part_name = row.get('@paramdexName', '')
+
+                                # Check if the part already exists in parts_data
+                                existing_part = None
+                                for part in parts_data['Internals'][category]:
+                                    if part['ID'] == part_id:
+                                        existing_part = part
+                                        break
+
+                                if existing_part:
+                                    # Update the part name
+                                    existing_part['Name'] = part_name
+                                else:
+                                    # Add the part to the appropriate category
+                                    parts_data['Internals'][category].append({'ID': part_id, 'Name': part_name})
+
+                with open(resource_path("parts.json"), 'w') as file:
+                    json.dump(parts_data, file, indent=4)
+
+                # Cleanup will be handled automatically by tempfile
+                self.load_parts()
+                self.load_weapons()
 
     def browse_design_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Design File', '', 'All Files (*)')
@@ -1094,6 +1286,46 @@ class DesignDecompressor(QWidget):
 
             print(f"File saved as: {file_path}")
 
+def get_github_release(repo_owner, repo_name, tag=None) -> (str, list):
+    if tag:
+        api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/tags/{tag}"
+    else:
+        api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/latest"
+    response = requests.get(api_url)
+    if response.status_code == 200:
+        release_data = response.json()
+        latest_tag = release_data["tag_name"]
+        return latest_tag, release_data["assets"]
+    else:
+        return None
+
+
+TOOLS_FOLDER = platformdirs.user_data_dir(appauthor="lugia19", roaming=True, appname="ac6_tools")
+VERSIONS_FILE = os.path.join(TOOLS_FOLDER, "versions.json")
+
+def check_tools():
+    os.makedirs(TOOLS_FOLDER, exist_ok=True)
+
+    if not os.path.exists(VERSIONS_FILE):
+        with open(VERSIONS_FILE, "w") as fp:
+            json.dump({}, fp)
+
+    with open(VERSIONS_FILE, 'r') as file:
+        versions = json.load(file)
+
+    witchy_dir = os.path.join(TOOLS_FOLDER, "witchybnd")
+    os.makedirs(witchy_dir, exist_ok=True)
+    latest_witchy_release = get_github_release("ividyon", "WitchyBND")
+    if latest_witchy_release and versions.get("witchy", "0.0") != latest_witchy_release[0]:
+        zip_path = os.path.join(witchy_dir, "witchy.zip")
+        DownloadDialog(f"Downloading WitchyBND", latest_witchy_release[1][0]["browser_download_url"], zip_path).exec()
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(witchy_dir)
+
+        versions["witchy"] = latest_witchy_release[0]
+    global witchy_path
+    witchy_path = os.path.join(witchy_dir, "WitchyBND.exe")
+
 
 if __name__ == '__main__':
     colors_dict = {
@@ -1106,85 +1338,8 @@ if __name__ == '__main__':
         "yellow": "#faf20c",
         "red": "#7a3a3a"
     }
-    stylesheet = """* {
-    background-color: {primary_color};
-    color: {secondary_color};
-}
 
-QLabel {
-    color: {text_color};
-}
-QMenu {
-    color: {text_color};
-}
-QLineEdit {
-    background-color: {secondary_color};
-    color: {text_color};
-    border: 1px solid {hover_color};
-}
-
-QPushButton {
-    background-color: {secondary_color};
-    color: {text_color};
-}
-
-QPushButton:hover {
-    background-color: {hover_color};
-}
-
-QCheckBox::indicator:unchecked {
-    color: {hover_color};
-    background-color: {secondary_color};
-}
-
-QCheckBox::indicator:checked {
-    color: {hover_color};
-    background-color: {primary_color};
-}
-
-QComboBox {
-    background-color: {secondary_color};
-    color: {text_color};
-    border: 1px solid {hover_color};
-}
-
-QAbstractItemView {
-    background-color: {secondary_color};
-    color: {text_color};
-}
-
-QMessageBox {
-    background-color: {primary_color};
-    color: {text_color};
-}
-
-QProgressBar {
-        border: 0px solid {hover_color};
-        text-align: center;
-        background-color: {secondary_color};
-        color: {text_color};
-}
-QProgressBar::chunk {
-    background-color: {toggle_color};
-}
-
-
-QScrollBar {
-    background: {primary_color};
-    border: 2px {text_color};
-}
-QScrollBar::handle {
-    background: {toggle_color};
-}
-
-QScrollBar::add-page, QScrollBar::sub-page {
-    background: none;
-}
-
-QFrame[frameShape="4"] {
-    background-color: {hover_color};
-}
-    """
+    stylesheet = open(os.path.join(os.path.dirname(__file__), "stylesheet.qss")).read()
 
     for colorKey, colorValue in colors_dict.items():
         stylesheet = stylesheet.replace("{" + colorKey + "}", colorValue)
@@ -1192,6 +1347,9 @@ QFrame[frameShape="4"] {
     app = QApplication([])
 
     app.setStyleSheet(stylesheet)
+    check_tools()
+
     decompressor = DesignDecompressor()
     decompressor.show()
+
     app.exec()
