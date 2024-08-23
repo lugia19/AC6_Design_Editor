@@ -1581,7 +1581,6 @@ class DesignDecompressor(QWidget):
 
             max_category_size = 40
             max_file_presets = 32
-
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Copy the selected .sl2 file to the temporary directory
                 temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
@@ -1594,21 +1593,27 @@ class DesignDecompressor(QWidget):
                 unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
                 unpacked_path = os.path.join(temp_dir, unpacked_folder)
 
-                # Decrypt all files in the unpacked folder
+                # Create a subfolder for encrypted backups
+                encrypted_backup_path = os.path.join(temp_dir, "encrypted_backup")
+                os.mkdir(encrypted_backup_path)
+
+                # Copy all encrypted files to the backup folder
                 for root, _, files in os.walk(unpacked_path):
                     for file in files:
                         if not file.endswith(".xml"):
-                            input_file = os.path.join(root, file)
-                            decrypt_file(input_file)
+                            src = os.path.join(root, file)
+                            dst = os.path.join(encrypted_backup_path, file)
+                            shutil.copy(src, dst)
 
                 preset_count = 99
                 data = None
                 current_data = 1
                 while preset_count >= max_file_presets:
-                    current_data += 1   #We start at USER_DATA_002
+                    current_data += 1  # We start at USER_DATA_002
                     if current_data > 6:
                         break
                     data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
+                    decrypt_file(data_path)
                     with open(data_path, "rb") as file:
                         data = file.read()
                         preset_count = struct.unpack_from('<I', data, 0x10)[0]
@@ -1616,18 +1621,19 @@ class DesignDecompressor(QWidget):
                     QMessageBox.critical(None, "Error", f"You don't have any slots remaining in this save file!")
                     return
 
-                #Okay, we're on a data file with < 32 ACs stored. data has its contents, and preset_count does as well.
                 user_data_final = UserDesignData.from_bytes(data)
 
                 # Now we gotta figure out to which category we want to add it to.
                 # Iterate over USER_DATA002-006 and collect presets by category
-                presets_by_category = {}
-                for i in range(4):
-                    presets_by_category[i+1] = []
+                presets_by_category = {i + 1: [] for i in range(4)}
                 for i in range(2, 7):
                     user_data_path = os.path.join(unpacked_path, f"USER_DATA00{i}")
+                    if i != current_data:
+                        decrypt_file(user_data_path)
                     with open(user_data_path, "rb") as file:
                         user_data_content = file.read()
+                    if i != current_data:
+                        encrypt_file(user_data_path)
 
                     user_data = UserDesignData.from_bytes(user_data_content)
                     for preset in user_data.presets:
@@ -1656,31 +1662,28 @@ class DesignDecompressor(QWidget):
                     if fname:
                         thumbnail = ACThumbnail.from_image(fname)
 
-                #Now we have these variables with their final values:
                 new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
                                     thumbnail=thumbnail)
                 user_data_final.add_preset(new_preset)
 
-
                 with open(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"), "wb") as file:
                     file.write(user_data_final.to_bytes())
 
-                # Encrypt all files in the unpacked folder
-                #os.startfile(unpacked_path)
-                print("")
-                for root, _, files in os.walk(unpacked_path):
-                    for file in files:
-                        if not file.endswith(".xml"):
-                            input_file = os.path.join(root, file)
-                            encrypt_file(input_file)
+                # Encrypt only the modified file
+                encrypt_file(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"))
+
+                # Copy back all other encrypted files from the backup
+                for file in os.listdir(encrypted_backup_path):
+                    if file != f"USER_DATA0{str(current_data).zfill(2)}":
+                        src = os.path.join(encrypted_backup_path, file)
+                        dst = os.path.join(unpacked_path, file)
+                        shutil.copy(src, dst)
 
                 run_witchy(unpacked_path)
                 shutil.copy(temp_sl2_path, file_path)
                 time.sleep(1)
-            QMessageBox.warning(self, "Save Complete", f"Design added to save file.\n"
-                                                 f"Please be careful. This feature can cause random save corruption that I haven't been able to pin down.\n"
-                                                 f"A copy of your save has been made at %appdata%/ArmoredCore6/your-id/{backup_filename}.\n"
-                                                 f"If your save becomes corrupted, please reach out to me. I could use your save to try and track down the bug.")
+            QMessageBox.information(self, "Save Complete", f"Design added to save file.")
+
     def generate_design_from_ui(self) -> bytes:
         end_data = None
         if self.userimage_textbox.text() != "":
