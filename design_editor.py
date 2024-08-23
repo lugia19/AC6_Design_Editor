@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 import zlib, struct
 
@@ -1574,7 +1575,7 @@ class DesignDecompressor(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
         if file_path:
             # Backup the original .sl2 file
-            backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{datetime.datetime.now().strftime('%Y%m%d')}.sl2"
+            backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.sl2"
             backup_path = os.path.join(os.path.dirname(file_path), backup_filename)
             shutil.copy(file_path, backup_path)
 
@@ -1640,9 +1641,11 @@ class DesignDecompressor(QWidget):
                 category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories_under_capacity, 0, False)
                 if ok and category:
                     selected_category = int(category.split(" ")[1])
+                else:
+                    return
 
                 thumbnail = ACThumbnail.empty_thumbnail()
-                reply = QMessageBox.question(None, 'Thumbnail',
+                reply = QMessageBox.question(self, 'Thumbnail',
                                              'Do you want to add a thumbnail?',
                                              QMessageBox.StandardButton.Yes |
                                              QMessageBox.StandardButton.No,
@@ -1673,8 +1676,11 @@ class DesignDecompressor(QWidget):
 
                 run_witchy(unpacked_path)
                 shutil.copy(temp_sl2_path, file_path)
-            QMessageBox.information(self, "Save Complete", "Design added to save file.")
-
+                time.sleep(1)
+            QMessageBox.warning(self, "Save Complete", f"Design added to save file.\n"
+                                                 f"Please be careful. This feature can cause random save corruption that I haven't been able to pin down.\n"
+                                                 f"A copy of your save has been made at %appdata%/ArmoredCore6/your-id/{backup_filename}.\n"
+                                                 f"If your save becomes corrupted, please reach out to me. I could use your save to try and track down the bug.")
     def generate_design_from_ui(self) -> bytes:
         end_data = None
         if self.userimage_textbox.text() != "":
@@ -1704,7 +1710,9 @@ class DesignDecompressor(QWidget):
         modified_data.write(begin_header.to_bytes())
 
         # Write the UgcID section
-        ugc_id_bytes = self.ugc_id_field.text().encode('utf-16-le') + b"\x00\x00"
+        ugc_id = self.ugc_id_field.text()
+        if ugc_id == "": ugc_id = "99999999"
+        ugc_id_bytes = ugc_id.encode('utf-16-le') + b"\x00\x00"
         ugc_id_header = ChunkHeader('UgcID', len(ugc_id_bytes), 0)
         modified_data.write(ugc_id_header.to_bytes())
         modified_data.write(ugc_id_bytes)
