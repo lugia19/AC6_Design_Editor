@@ -1,8 +1,10 @@
 import copy
+import datetime
 import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,17 +17,21 @@ import requests
 from typing import List, Union
 
 import xmltodict
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QGridLayout, QComboBox, QCompleter, QColorDialog, QCheckBox, \
-    QStackedWidget, QSpacerItem, QSizePolicy, QMessageBox, QScrollArea
+    QStackedWidget, QSpacerItem, QSizePolicy, QMessageBox, QScrollArea, QInputDialog
 from PyQt6.QtCore import Qt, QSize, QRect
 from PyQt6.QtGui import QPainter, QPainterPath, QColor
 from PyQt6.QtWidgets import QAbstractButton, QSizePolicy
 from io import BytesIO
 
 from customWidgets import DownloadDialog
+
+sl2_encryption_key = bytes([0xB1, 0x56, 0x87, 0x9F, 0x13, 0x48, 0x97, 0x98, 0x70, 0x05, 0xC4, 0x87, 0x00, 0xAE, 0xF8, 0x79])
 
 # Define the category offsets
 CATEGORY_OFFSETS = {
@@ -55,12 +61,41 @@ for i in range(23):
     weathering_list.append(f"Weathered {i}")
 
 witchy_path = None
+texconv_path = None
 def run_witchy(path:str, recursive:bool=False):
     #args = ["-p", f"\"{path}\""]
     args = [witchy_path, "-s", path]
     if recursive:
         args.insert(2, "-c")
     subprocess.run(args, check=True, capture_output=True, text=True)
+
+def convert_to_bc7(image_path:str) -> str:
+    filename = os.path.splitext(os.path.basename(image_path))[0]
+    folder_path = os.path.dirname(image_path)
+    subprocess.run([texconv_path, "-f", "BC7_UNORM", image_path, "-o", folder_path, "-y", "-m", "1"], check=True)
+    return os.path.join(folder_path,  f"{filename}.dds")
+
+def decrypt_file(input_file):
+    with open(input_file, 'rb') as file:
+        iv = file.read(16)
+        ciphertext = file.read()
+
+    cipher = AES.new(sl2_encryption_key, AES.MODE_CBC, iv)
+    plaintext = cipher.decrypt(ciphertext)
+
+    with open(input_file, 'wb') as file:
+        file.write(plaintext)
+
+def encrypt_file(input_file):
+    with open(input_file, 'rb') as file:
+        plaintext = file.read()
+
+    cipher = AES.new(sl2_encryption_key, AES.MODE_CBC)
+    ciphertext = cipher.encrypt(pad(plaintext, AES.block_size))
+
+    with open(input_file, 'wb') as file:
+        file.write(cipher.iv)
+        file.write(ciphertext)
 
 def resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -124,6 +159,305 @@ class ChunkHeader:
         signature_bytes = self.signature.encode('ascii').ljust(0x10, b'\x00')
         header_bytes = struct.pack('<IIII', self.length, self.version, 0, 0)
         return signature_bytes + header_bytes
+
+
+class ACThumbnail:
+    width = 356
+    height = 124
+    unk04 = 1424
+
+    def __init__(self):
+        self.pixel_data = b''
+        self.data_length = 44144
+    @classmethod
+    def from_image(cls, image_path):
+        thumbnail = cls()
+
+        # Create a temporary directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Copy the image to the temporary directory
+            temp_image_path = os.path.join(temp_dir, os.path.basename(image_path))
+            shutil.copy2(image_path, temp_image_path)
+
+            # Resize the image
+            image = QImage(temp_image_path)
+            resized_image = image.scaled(thumbnail.width, thumbnail.height, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            resized_image_path = os.path.join(temp_dir, "resized_image.png")
+            resized_image.save(resized_image_path)
+
+            # Convert to BC7
+            bc7_image_path = convert_to_bc7(resized_image_path)
+
+            # Load the DDS file's bytes
+            with open(bc7_image_path, 'rb') as f:
+                dds_data = f.read()
+
+            header_offset = 148
+            thumbnail.pixel_data = dds_data[header_offset:thumbnail.data_length]
+
+            # Ensure the pixel data is the correct length
+            if len(thumbnail.pixel_data) < thumbnail.data_length:
+                thumbnail.pixel_data += b'\x00' * (thumbnail.data_length - len(thumbnail.pixel_data))
+            elif len(thumbnail.pixel_data) > thumbnail.data_length:
+                thumbnail.pixel_data = thumbnail.pixel_data[:thumbnail.data_length]
+
+        return thumbnail
+
+    def to_bytes(self):
+        header = struct.pack("<IIIIII",
+                             self.data_length,
+                             self.unk04,
+                             self.width,
+                             self.height,
+                             0,  # unk10
+                             0)  # unk14
+        return header + self.pixel_data
+
+    @classmethod
+    def empty_thumbnail(cls):
+        thumbnail = cls()
+        data = struct.pack("<IIIIII", thumbnail.data_length,
+                           thumbnail.unk04,
+                           ACThumbnail.width,
+                           ACThumbnail.height,
+                           0,  # unk10
+                           0)  # unk14
+        header = struct.unpack("<IIIIII", data[:24])
+        thumbnail.data_length = header[0]
+        thumbnail.unk04 = header[1]
+        thumbnail.width = header[2]
+        thumbnail.height = header[3]
+        thumbnail.pixel_data = b'\x00' * thumbnail.data_length
+        return thumbnail
+
+    @classmethod
+    def from_bytes(cls, data):
+        thumbnail = cls()
+        # Unpack the header
+        header = struct.unpack("<IIIIII", data[:24])
+
+        thumbnail.data_length = header[0]
+        thumbnail.unk04 = header[1]
+        thumbnail.width = header[2]
+        thumbnail.height = header[3]
+        # We don't need to store unk10 and unk14 as they should always be 0
+
+        # Extract the pixel data
+        thumbnail.pixel_data = data[24:24 + thumbnail.data_length]
+
+
+        # Verify the data length
+        if len(thumbnail.pixel_data) != thumbnail.data_length:
+            raise ValueError("Pixel data length does not match the specified data length")
+
+        return thumbnail
+
+class AsmcHeader:
+    def __init__(self, compressed_size, uncompressed_size):
+        self.magic = b"ASMC"
+        self.unk04 = 0x291222
+        self.compressed_size = compressed_size
+        self.uncompressed_size = uncompressed_size
+
+    @classmethod
+    def from_bytes(cls, data):
+        magic, unk04, compressed_size, uncompressed_size = struct.unpack("<4sIII", data)
+        assert magic == b"ASMC"
+        assert unk04 == 0x291222
+        return cls(compressed_size, uncompressed_size)
+
+    def to_bytes(self):
+        return struct.pack("<4sIII", self.magic, self.unk04, self.compressed_size, self.uncompressed_size)
+
+class ASMC:
+    def __init__(self, decompressed_data):
+        self.header = None
+        self.compressed_data = None
+        if decompressed_data:
+            self.compress(decompressed_data)
+
+    @classmethod
+    def from_bytes(cls, data):
+        header = AsmcHeader.from_bytes(data[:16])
+        compressed_data = data[16:16+header.compressed_size]
+        decompressed_data = zlib.decompress(compressed_data)
+        return cls(decompressed_data)
+
+    def to_bytes(self):
+        return self.header.to_bytes() + self.compressed_data
+
+    def decompress(self) -> bytes:
+        return zlib.decompress(self.compressed_data)
+
+    def compress(self, data):
+        compressed_data = zlib.compress(data, level=zlib.Z_BEST_COMPRESSION)
+        self.header = AsmcHeader(len(compressed_data), len(data))
+        self.compressed_data = compressed_data
+
+class Preset:
+    def __init__(self, category, date_time, design:ASMC, thumbnail):
+        self.category = category
+        if isinstance(date_time, datetime.datetime):
+            self.date_time = self.datetime_to_bytes(date_time)
+        else:
+            self.date_time = date_time
+
+        self.design = design
+        self.thumbnail = thumbnail
+
+    @staticmethod
+    def datetime_to_bytes(date_time):
+        file_time = Preset.datetime_to_filetime(date_time)
+        system_time = Preset.datetime_to_systemtime(date_time)
+        return struct.pack("<QQ", file_time, system_time)
+
+    @staticmethod
+    def datetime_to_filetime(date_time):
+        # Convert datetime to Windows FILETIME
+        epoch = datetime.datetime(1601, 1, 1)
+        delta = date_time - epoch
+        filetime = int(delta.total_seconds() * 10000000)
+        return filetime
+
+    @staticmethod
+    def datetime_to_systemtime(date_time):
+        # Convert datetime to PackedSystemTime
+        year = date_time.year
+        month = date_time.month
+        day_of_week = date_time.weekday()  # 0-6, where 0 is Monday
+        day = date_time.day
+        hour = date_time.hour
+        minute = date_time.minute
+        second = date_time.second
+        millisecond = date_time.microsecond // 1000
+
+        # Pack the values according to the bit field structure
+        packed = (
+                (year & 0xFFF) |
+                ((millisecond & 0x3FF) << 12) |
+                ((month & 0xF) << 22) |
+                ((day_of_week & 0x7) << 26) |
+                ((day & 0x1F) << 29) |
+                ((hour & 0x1F) << 34) |
+                ((minute & 0x3F) << 39) |
+                ((second & 0x3F) << 45)
+        )
+
+        return packed
+
+    @classmethod
+    def from_bytes(cls, data):
+        # Parse the chunks
+        chunks = {}
+        offset = 0
+        while offset < len(data):
+            chunk_header = ChunkHeader.from_bytes(data[offset:offset+32])
+            chunk_data = data[offset+32:offset+32+chunk_header.length]
+            chunks[chunk_header.signature] = (chunk_header.version, chunk_data)
+            offset += 32 + chunk_header.length
+            if chunk_header.signature == "----  end  ----":
+                break
+
+        # Extract the chunk data
+        category = struct.unpack("<B", chunks["Category"][1])[0]
+        date_time = chunks["DateTime"][1]
+        design = ASMC.from_bytes(chunks["Design"][1])
+        thumbnail = ACThumbnail.from_bytes(chunks["Thumbnail"][1])
+
+        return cls(category, date_time, design, thumbnail)
+
+    def to_bytes(self):
+        # Generate the chunk data
+        category_data = struct.pack("<B", self.category)
+        design_data = self.design.to_bytes()
+        thumbnail_data = self.thumbnail.to_bytes()
+
+        # Create the chunks
+        chunks = [
+            ("---- begin ----", b""),
+            ("Category", category_data),
+            ("DateTime", self.date_time),
+            ("Design", design_data),
+            ("Thumbnail", thumbnail_data),
+            ("----  end  ----", b"")
+        ]
+
+        # Generate the preset data
+        preset_data = b""
+        for signature, chunk_data in chunks:
+            chunk_header = ChunkHeader(signature, len(chunk_data), 0)
+            preset_data += chunk_header.to_bytes() + chunk_data
+
+        return preset_data
+
+class UserDesignData:
+    def __init__(self, unk0c, unk04, unk08, presets):
+        self.unk0c = unk0c
+        self.unk04 = unk04
+        self.unk08 = unk08
+        self.presets = presets
+
+    @classmethod
+    def from_bytes(cls, data):
+        # Extract the inner size from the header
+        inner_size = struct.unpack("<I", data[:4])[0]
+
+        # Extract the hash from the end of the inner content
+        stored_hash = data[4+inner_size - 16:inner_size+4]
+
+        # Extract the main content (excluding size field and hash)
+        content = data[4:inner_size - 16+4]
+
+        # Parse the header
+        header = content[:16]
+        unk04, unk08, unk0c, preset_count = struct.unpack("<IIII", header)
+
+        # Parse presets
+        presets = []
+        offset = 16
+        for _ in range(preset_count):
+            preset_data = content[offset:]
+            preset = Preset.from_bytes(preset_data)
+            presets.append(preset)
+            offset += len(preset.to_bytes())
+
+        instance = cls(unk0c, unk04, unk08, presets)
+        return instance
+
+    def to_bytes(self):
+        inner_size = 4194320
+
+        # Calculate the inner content
+        header = struct.pack("<IIII", 0, 0, len(self.presets), len(self.presets))
+        preset_data = b"".join(preset.to_bytes() for preset in self.presets)
+
+        # Pad the preset_data with zeros to reach the fixed size
+        padding_length = inner_size - len(header) - len(preset_data) - 16  # 16 is for MD5 hash
+        if padding_length < 0:
+            raise ValueError("Preset data exceeds the fixed inner size")
+
+        padded_preset_data = preset_data + b'\x00' * padding_length
+
+        inner_content = header + padded_preset_data
+
+        # Calculate MD5 hash
+        md5_hash = hashlib.md5(inner_content).digest()
+
+        # Create the full content with size, inner content, and hash
+        full_content = struct.pack("<I", inner_size) + inner_content + md5_hash
+
+        # Calculate padding
+        padding_size = (16 - (len(full_content) % 16)) % 16
+        full_content += b'\x0C' * padding_size
+
+        return full_content
+
+    def add_preset(self, preset):
+        self.presets.append(preset)
+
+    def remove_preset(self, index):
+        if 0 <= index < len(self.presets):
+            del self.presets[index]
 
 class ColorRowData:
     def __init__(self, color_name, color=None, material=None, pattern=False):
@@ -668,7 +1002,7 @@ class DesignDecompressor(QWidget):
             weapons_layout.addLayout(row_layout)
         layout.addLayout(weapons_layout)
 
-        self.import_regbin(resource_path("data/regulation.bin"))
+        self.import_regbin(resource_path("resources/regulation.bin"))
 
         # Navigation row
         nav_layout = QHBoxLayout()
@@ -703,6 +1037,34 @@ class DesignDecompressor(QWidget):
             self.coloring_stack.addWidget(section)
         layout.addWidget(self.coloring_stack)
 
+
+        # UserImage & Decals section
+        userimage_label = QLabel('UserImage & Decals')
+        userimage_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        userimage_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(userimage_label)
+
+        userimage_line = QFrame()
+        userimage_line.setFrameShape(QFrame.Shape.HLine)
+        userimage_line.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(userimage_line)
+
+        userimage_layout = QHBoxLayout()
+        userimage_layout.addWidget(QLabel("Design file for UserImage & Decals:"))
+        self.userimage_textbox = QLineEdit()
+        userimage_layout.addWidget(self.userimage_textbox)
+
+        browse_button = QPushButton('Browse')
+        browse_button.clicked.connect(self.browse_userimage_file)
+        userimage_layout.addWidget(browse_button)
+
+        erase_button = QPushButton('Erase')
+        erase_button.clicked.connect(self.erase_userimage_file)
+        userimage_layout.addWidget(erase_button)
+
+        layout.addLayout(userimage_layout)
+
+
         self.editor_widget = QWidget()
         self.editor_widget.setLayout(layout)
         self.scroll_area = QScrollArea()
@@ -713,32 +1075,41 @@ class DesignDecompressor(QWidget):
 
         # Bottom row
         bottom_row_layout = QHBoxLayout()
-        design_file_label = QLabel('Design File:')
-        self.design_file_input = QLineEdit()
-        design_file_browse_button = QPushButton('Browse')
-        design_file_browse_button.clicked.connect(self.browse_design_file)
-        design_file_load_button = QPushButton('Load')
-        design_file_load_button.clicked.connect(self.load_design_file)
+        load_from_file_button = QPushButton('Load from .design')
+        load_from_file_button.clicked.connect(self.browse_design_file)
+        load_from_save_button = QPushButton('Load from .sl2')
+        load_from_save_button.clicked.connect(self.load_from_save)
 
         import_regbin_button = QPushButton('Import mod parts')
         import_regbin_button.clicked.connect(self.import_regbin)
 
-        bottom_row_layout.addWidget(design_file_label)
-        bottom_row_layout.addWidget(self.design_file_input)
-        bottom_row_layout.addWidget(design_file_browse_button)
-        bottom_row_layout.addWidget(design_file_load_button)
+        bottom_row_layout.addWidget(load_from_file_button)
+        bottom_row_layout.addWidget(load_from_save_button)
+
+        bottom_row_layout.addWidget(QLabel(""))
+        bottom_row_layout.addWidget(QLabel(""))
+        bottom_row_layout.addWidget(import_regbin_button)
+        bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(QLabel(""))
 
-        bottom_row_layout.addWidget(import_regbin_button)
-
-        bottom_row_layout.addStretch()
-        save_button = QPushButton('Save')
-        save_button.clicked.connect(self.save_file)
-        bottom_row_layout.addWidget(save_button)
+        save_design_button = QPushButton('Save .design')
+        save_design_button.clicked.connect(self.save_design_file)
+        save_to_sl2_button = QPushButton('Save to .sl2')
+        save_to_sl2_button.clicked.connect(self.save_to_sl2)
+        bottom_row_layout.addWidget(save_to_sl2_button)
+        bottom_row_layout.addWidget(save_design_button)
         self.root_layout.addLayout(bottom_row_layout)
 
         self.setLayout(self.root_layout)
         self.fix_size()
+
+    def browse_userimage_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Design File', '', 'All Files (*)')
+        if file_path:
+            self.userimage_textbox.setText(file_path)
+
+    def erase_userimage_file(self):
+        self.userimage_textbox.clear()
 
     def fix_size(self):
         # Get screen size
@@ -1035,11 +1406,9 @@ class DesignDecompressor(QWidget):
     def browse_design_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Design File', '', 'All Files (*)')
         if file_path:
-            self.design_file_input.setText(file_path)
-            self.load_design_file()
+            self.load_design_file(file_path)
 
-    def load_design_file(self):
-        file_path = self.design_file_input.text()
+    def load_design_file(self, file_path):
         if file_path:
             try:
                 with open(file_path, 'rb') as file:
@@ -1047,17 +1416,51 @@ class DesignDecompressor(QWidget):
                     if file_content.startswith(b'ASMC'):
                         decompressed_data = self.try_decompress(file_content)
                         if decompressed_data:
-                            self.decompressed_data = BytesIO(decompressed_data)
                             print("Decompression successful!")
                     elif file_content.startswith(b'---- begin ----'):
-                        self.decompressed_data = BytesIO(file_content)
+                        decompressed_data = file_content
                         print("File loaded as is.")
                     else:
                         raise ValueError("File does not start with the required bytes.")
             except FileNotFoundError as e:
                 print("File not found. Please check the file path.")
                 raise e
-            self.read_sections()
+            self.read_sections(decompressed_data)
+            self.userimage_textbox.setText(file_path)  # Set the filepath in the textbox
+
+    def load_from_save(self):
+        appdata_path = os.path.expandvars("%AppData%")
+        default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        if file_path:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Copy the selected .sl2 file to the temporary directory
+                temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
+                shutil.copy(file_path, temp_sl2_path)
+
+                # Run the external exe with the copied .sl2 path as argument
+                exe_path = resource_path("resources/DesignDump.exe")
+                process = subprocess.Popen([exe_path, temp_sl2_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, _ = process.communicate()
+
+                # Parse the console output to get the design names
+                design_names = re.findall(r"USER_DATA\d+\[\d+\]\.design <- .*", stdout)
+
+                # Extract only the second part of the design names (without filenames)
+                design_labels = [name.split("<-")[1].strip() for name in design_names]
+
+                # Show a dialog with a dropdown listing the design labels
+                design_label, ok = QInputDialog.getItem(self, "Select Design", "Choose a design:", design_labels, 0, False)
+                if ok and design_label:
+                    # Find the corresponding full design name based on the selected label
+                    selected_design_name = next(name for name in design_names if name.endswith(design_label))
+
+                    # Extract the filename from the selected design name
+                    filename = selected_design_name.split(" <- ")[0]
+                    design_folder = os.path.join(temp_dir, f"{os.path.basename(file_path)}-design")
+                    design_file = os.path.join(design_folder, filename)
+                    self.load_design_file(design_file)
+
     def try_decompress(self, data):
         try:
             # Find the position of the zlib header [0x78, 0xDA]
@@ -1091,13 +1494,10 @@ class DesignDecompressor(QWidget):
             print(f"Decompression failed: {e}")
             raise e
 
-    def read_sections(self):
-        self.decompressed_data.seek(0)
-        data = self.decompressed_data.read()
-
-        _, ugc_id_bytes = self.read_section_value(data, b'UgcID', b'DataName')
-        _, data_name_bytes = self.read_section_value(data, b'DataName', b'AcName')
-        _, ac_name_bytes = self.read_section_value(data, b'AcName', b'Assemble')
+    def read_sections(self, decompressed_bytes):
+        _, ugc_id_bytes = self.read_section_value(decompressed_bytes, b'UgcID')
+        _, data_name_bytes = self.read_section_value(decompressed_bytes, b'DataName')
+        _, ac_name_bytes = self.read_section_value(decompressed_bytes, b'AcName')
 
         ugc_id = self.convert_to_string(ugc_id_bytes)
         data_name = self.convert_to_string(data_name_bytes)
@@ -1107,7 +1507,7 @@ class DesignDecompressor(QWidget):
         self.data_name_field.setText(data_name)
         self.ac_name_field.setText(ac_name)
 
-        _, assemble_bytes = self.read_section_value(data, b'Assemble', b'Coloring')
+        _, assemble_bytes = self.read_section_value(decompressed_bytes, b'Assemble')
         if assemble_bytes is not None:
             parts, weapons = process_assemble_bytes(assemble_bytes)
             if parts is not None and weapons is not None:
@@ -1134,7 +1534,7 @@ class DesignDecompressor(QWidget):
         else:
             print("Assemble section not found.")
 
-        _, coloring_bytes = self.read_section_value(data, b'Coloring', b'UserImage')
+        _, coloring_bytes = self.read_section_value(decompressed_bytes, b'Coloring')
         color_datas = process_coloring_bytes(coloring_bytes)
         for i in range(len(self.coloring_sections)):
             self.coloring_sections[i].import_settings(color_datas[i])
@@ -1150,19 +1550,22 @@ class DesignDecompressor(QWidget):
         else:
             return None
 
-    def read_section_value(self, data, start_marker, end_marker):
-        start_index = data.find(start_marker)
-        if start_index == -1:
-            return None
+    def read_section_value(self, data, start_marker, instance=0):
+        start_index = -1
+        instance_count = 0
+        search_start = 0
 
-        end_index = data.find(end_marker)
-        if end_index == -1:
-            return None
+        while instance_count <= instance:
+            start_index = data.find(start_marker, search_start)
+            if start_index == -1:
+                return None
+            instance_count += 1
+            search_start = start_index + len(start_marker)
 
         chunk_header_bytes = data[start_index:start_index + 0x20]
         chunk_header = ChunkHeader.from_bytes(chunk_header_bytes)
         value_start = start_index + 0x20
-        value_bytes = data[value_start:end_index]
+        value_bytes = data[value_start:value_start + chunk_header.length]
 
         # Strip trailing zero bytes
         while value_bytes and value_bytes[-1] == 0:
@@ -1170,164 +1573,281 @@ class DesignDecompressor(QWidget):
 
         return chunk_header, value_bytes
 
-    def save_file(self):
+    def save_to_sl2(self):
+        appdata_path = os.path.expandvars("%AppData%")
+        default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        if file_path:
+            # Backup the original .sl2 file
+            backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{datetime.datetime.now().strftime('%Y%m%d')}.sl2"
+            backup_path = os.path.join(os.path.dirname(file_path), backup_filename)
+            shutil.copy(file_path, backup_path)
+
+            max_category_size = 40
+            max_file_presets = 32
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Copy the selected .sl2 file to the temporary directory
+                temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
+                shutil.copy(file_path, temp_sl2_path)
+
+                # Unpack the .sl2 file using run_witchy
+                run_witchy(temp_sl2_path, True)
+
+                # Find the unpacked folder
+                unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
+                unpacked_path = os.path.join(temp_dir, unpacked_folder)
+
+                # Decrypt all files in the unpacked folder
+                for root, _, files in os.walk(unpacked_path):
+                    for file in files:
+                        if not file.endswith(".xml"):
+                            input_file = os.path.join(root, file)
+                            decrypt_file(input_file)
+
+                preset_count = 99
+                data = None
+                current_data = 1
+                while preset_count >= max_file_presets:
+                    current_data += 1   #We start at USER_DATA_002
+                    if current_data > 6:
+                        break
+                    data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
+                    with open(data_path, "rb") as file:
+                        data = file.read()
+                        preset_count = struct.unpack_from('<I', data, 0x10)[0]
+                if current_data > 6:
+                    QMessageBox.critical(None, "Error", f"You don't have any slots remaining in this save file!")
+                    return
+
+                #Okay, we're on a data file with < 32 ACs stored. data has its contents, and preset_count does as well.
+                user_data_final = UserDesignData.from_bytes(data)
+
+                # Now we gotta figure out to which category we want to add it to.
+                # Iterate over USER_DATA002-006 and collect presets by category
+                presets_by_category = {}
+                for i in range(4):
+                    presets_by_category[i+1] = []
+                for i in range(2, 7):
+                    user_data_path = os.path.join(unpacked_path, f"USER_DATA00{i}")
+                    with open(user_data_path, "rb") as file:
+                        user_data_content = file.read()
+
+                    user_data = UserDesignData.from_bytes(user_data_content)
+                    for preset in user_data.presets:
+                        category = preset.category
+                        presets_by_category[category].append(preset)
+
+                # Find categories with less than 40 members
+                categories_under_capacity = [f"Tab {category}" for category, presets in presets_by_category.items() if len(presets) < max_category_size]
+
+                # Present a dialog for the user to choose a category
+                category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories_under_capacity, 0, False)
+                if ok and category:
+                    selected_category = int(category.split(" ")[1])
+
+                thumbnail = ACThumbnail.empty_thumbnail()
+                reply = QMessageBox.question(None, 'Thumbnail',
+                                             'Do you want to add a thumbnail?',
+                                             QMessageBox.StandardButton.Yes |
+                                             QMessageBox.StandardButton.No,
+                                             QMessageBox.StandardButton.No)
+                if reply == QMessageBox.StandardButton.Yes:
+                    fname, _ = QFileDialog.getOpenFileName(None, 'Open file',
+                                                           filter="Image files (*.jpg *.png *.bmp)")
+                    if fname:
+                        thumbnail = ACThumbnail.from_image(fname)
+
+                #Now we have these variables with their final values:
+                new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
+                                    thumbnail=thumbnail)
+                user_data_final.add_preset(new_preset)
+
+
+                with open(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"), "wb") as file:
+                    file.write(user_data_final.to_bytes())
+
+                # Encrypt all files in the unpacked folder
+                #os.startfile(unpacked_path)
+                print("")
+                for root, _, files in os.walk(unpacked_path):
+                    for file in files:
+                        if not file.endswith(".xml"):
+                            input_file = os.path.join(root, file)
+                            encrypt_file(input_file)
+
+                run_witchy(unpacked_path)
+                shutil.copy(temp_sl2_path, file_path)
+            QMessageBox.information(self, "Save Complete", "Design added to save file.")
+
+    def generate_design_from_ui(self) -> bytes:
+        end_data = None
+        if self.userimage_textbox.text() != "":
+            # Load the original file
+            with open(self.userimage_textbox.text(), 'rb') as file:
+                original_data = file.read()
+
+            # Check if the file needs to be decompressed
+            if original_data.startswith(b'ASMC'):
+                original_data = self.try_decompress(original_data)
+                if original_data is None:
+                    raise ValueError("Decompression failed.")
+
+            # Find the start of the "Coloring" section
+            end_start = original_data.find(b'UserImage')
+            if end_start == -1:
+                raise ValueError("End section not found in the original file.")
+
+            # Store everything starting at the "Coloring" section
+            end_data = original_data[end_start:]
+
+        # Create a BytesIO object to store the modified data
+        modified_data = BytesIO()
+
+        # Write the "---- begin ----" header
+        begin_header = ChunkHeader('---- begin ----', 0, 0)
+        modified_data.write(begin_header.to_bytes())
+
+        # Write the UgcID section
+        ugc_id_bytes = self.ugc_id_field.text().encode('utf-16-le') + b"\x00\x00"
+        ugc_id_header = ChunkHeader('UgcID', len(ugc_id_bytes), 0)
+        modified_data.write(ugc_id_header.to_bytes())
+        modified_data.write(ugc_id_bytes)
+
+        # Write the DataName section
+        data_name = self.data_name_field.text()
+        if data_name == "": data_name = "DATA_NAME"
+        data_name_bytes = data_name.encode('utf-16-le') + b"\x00\x00"
+        data_name_header = ChunkHeader('DataName', len(data_name_bytes), 0)
+        modified_data.write(data_name_header.to_bytes())
+        modified_data.write(data_name_bytes)
+
+        # Write the AcName section
+        ac_name = self.ac_name_field.text()
+        if ac_name == "": ac_name = "AC_NAME"
+        ac_name_bytes = ac_name.encode('utf-16-le') + b"\x00\x00"
+        ac_name_header = ChunkHeader('AcName', len(ac_name_bytes), 0)
+        modified_data.write(ac_name_header.to_bytes())
+        modified_data.write(ac_name_bytes)
+
+        # Write the "Assemble" section
+        assemble_data = BytesIO()
+
+        # Write the Parts
+        part_fields = [
+            self.part_fields[0],  # Head
+            self.part_fields[1],  # Body
+            self.part_fields[2],  # Arms
+            self.part_fields[3],  # Legs
+            self.part_fields[4],  # Booster
+            self.part_fields[5],  # Generator
+            self.part_fields[6]  # FCS
+        ]
+
+        part_categories = ["body_part", "body_part", "body_part", "body_part", "booster", "generator", "fcs"]
+        for idx, part_field in enumerate(part_fields):
+            part_id = int(part_field.currentText().split(' ')[0].strip())
+            assemble_data.write(equipment_id_to_save_id(part_id, part_categories[idx]))
+
+        assemble_data.write(b'\xFF\xFF\xFF\xFF')
+
+        # Write the Weapons
+        weapon_fields = [
+            self.weapon_fields[0],  # Left Hand
+            self.weapon_fields[1],  # Right Hand
+            self.weapon_fields[2],  # Left Shoulder
+            self.weapon_fields[3],  # Right Shoulder
+            299300,  # Hardcoded value
+            299100,  # Hardcoded value
+            -1,  # Placeholder for the four FF bytes
+            self.weapon_fields[4]  # Core Expansion
+        ]
+        for weapon_field in weapon_fields:
+            if weapon_field == -1:
+                assemble_data.write(b'\xFF\xFF\xFF\xFF')
+            else:
+                if isinstance(weapon_field, int):
+                    weapon_id = weapon_field
+                else:
+                    weapon_id = int(weapon_field.currentText().split(' ')[0].strip())
+                assemble_data.write(equipment_id_to_save_id(weapon_id, 'weapon'))
+
+        assemble_header = ChunkHeader('Assemble', len(assemble_data.getvalue()), 3)
+        modified_data.write(assemble_header.to_bytes())
+        modified_data.write(assemble_data.getvalue())
+
+        # Write the color sets
+        color_set_data = BytesIO()
+        for i, section in enumerate(self.coloring_sections):
+            section_data_bytes = section.export_settings().to_bytes()
+            color_set_data.write(section_data_bytes)
+            # Write dummy data for unknown sections
+            if i == 4:  # After Right weapon
+                for _ in range(2):
+                    color_set_data.write(section_data_bytes)  # Repeat Right weapon data
+            elif i == 7:  # After Left weapon
+                for _ in range(3):
+                    color_set_data.write(section_data_bytes)  # Repeat Left weapon data
+
+        # Update the "Coloring" header with the actual length
+        coloring_header = ChunkHeader('Coloring', len(color_set_data.getvalue()), 3)
+        modified_data.write(coloring_header.to_bytes())
+        # Write the color set data
+        modified_data.write(color_set_data.getvalue())
+
+        # Write the stored end data (UserImage and beyond)
+        if end_data:
+            modified_data.write(end_data)
+            return modified_data.getvalue()
+        else:
+            # Create empty chunks for UserImage and ----  end  ----
+            userimage_header = ChunkHeader("UserImage", 4, 0)
+            modified_data.write(userimage_header.to_bytes())
+            modified_data.write(b"\x00\x00\x00\x00")
+
+            # Create Decal chunk
+            decal_data = BytesIO()
+            decal_slot_count = 5
+            for k in range(decal_slot_count):
+                decal_count = 1
+                decal_data.write(struct.pack('<I', decal_count))
+                for j in range(decal_count):
+                    decal_data.write(struct.pack('<I', 0))  # imageId
+                    decal_data.write(struct.pack('<fffffffff', 0, 0, 0, 0, 0, 0, 0, 0, 0))  # unk04 to unk24
+                    decal_data.write(struct.pack('<II', 0, 0))  # unk28 and unk2c
+                    decal_data.write(struct.pack('<f', 0))  # unk30
+                    decal_data.write(struct.pack('<HHI', 0, 0, 0))  # unk34, unk36, unk38
+                    decal_data.write(struct.pack('<BBBB', 0, 0, 0, 0))  # unk3c, unk3d, unk3e, unk3f
+            decal_header = ChunkHeader('Decal', len(decal_data.getvalue()), 1)
+            modified_data.write(decal_header.to_bytes())
+            modified_data.write(decal_data.getvalue())
+
+            # Create Marking chunk
+            marking_data = BytesIO()
+            marking_version = 2
+            slot_count = 17
+            decal_ids = [0] * slot_count
+            use_emblem = [0] * slot_count
+            marking_data.write(struct.pack(f'<{slot_count}I', *decal_ids))
+            marking_data.write(struct.pack(f'<{slot_count}B', *use_emblem))
+            marking_header = ChunkHeader('Marking', len(marking_data.getvalue()), marking_version)
+            modified_data.write(marking_header.to_bytes())
+            modified_data.write(marking_data.getvalue())
+
+            end_header = ChunkHeader("----  end  ----", 0, 0)
+            modified_data.write(end_header.to_bytes())
+
+            return modified_data.getvalue()
+
+    def save_design_file(self):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'All Files (*)')
         if file_path:
-            # Load the original file
-            end_data = None
-            if self.design_file_input.text() != "":
-                with open(self.design_file_input.text(), 'rb') as file:
-                    original_data = file.read()
-
-                # Check if the file needs to be decompressed
-                if original_data.startswith(b'ASMC'):
-                    original_data = self.try_decompress(original_data)
-                    if original_data is None:
-                        raise ValueError("Decompression failed.")
-
-                # Find the start of the "Coloring" section
-                end_start = original_data.find(b'UserImage')
-                if end_start == -1:
-                    raise ValueError("End section not found in the original file.")
-
-                # Store everything starting at the "Coloring" section
-                end_data = original_data[end_start:]
-
-            # Create a BytesIO object to store the modified data
-            modified_data = BytesIO()
-
-            # Write the "---- begin ----" header
-            begin_header = ChunkHeader('---- begin ----', 0, 0)
-            modified_data.write(begin_header.to_bytes())
-
-            # Write the UgcID section
-            ugc_id_bytes = self.ugc_id_field.text().encode('utf-16-le') + b"\x00\x00"
-            ugc_id_header = ChunkHeader('UgcID', len(ugc_id_bytes), 0)
-            modified_data.write(ugc_id_header.to_bytes())
-            modified_data.write(ugc_id_bytes)
-
-            # Write the DataName section
-            data_name_bytes = self.data_name_field.text().encode('utf-16-le') + b"\x00\x00"
-            data_name_header = ChunkHeader('DataName', len(data_name_bytes), 0)
-            modified_data.write(data_name_header.to_bytes())
-            modified_data.write(data_name_bytes)
-
-            # Write the AcName section
-            ac_name_bytes = self.ac_name_field.text().encode('utf-16-le') + b"\x00\x00"
-            ac_name_header = ChunkHeader('AcName', len(ac_name_bytes), 0)
-            modified_data.write(ac_name_header.to_bytes())
-            modified_data.write(ac_name_bytes)
-
-            # Write the "Assemble" section
-            assemble_data = BytesIO()
-
-            # Write the Parts
-            part_fields = [
-                self.part_fields[0],  # Head
-                self.part_fields[1],  # Body
-                self.part_fields[2],  # Arms
-                self.part_fields[3],  # Legs
-                self.part_fields[4],  # Booster
-                self.part_fields[5],  # Generator
-                self.part_fields[6]  # FCS
-            ]
-
-            part_categories = ["body_part", "body_part", "body_part", "body_part", "booster", "generator", "fcs"]
-            for idx, part_field in enumerate(part_fields):
-                part_id = int(part_field.currentText().split(' ')[0].strip())
-                assemble_data.write(equipment_id_to_save_id(part_id, part_categories[idx]))
-
-            assemble_data.write(b'\xFF\xFF\xFF\xFF')
-
-            # Write the Weapons
-            weapon_fields = [
-                self.weapon_fields[0],  # Left Hand
-                self.weapon_fields[1],  # Right Hand
-                self.weapon_fields[2],  # Left Shoulder
-                self.weapon_fields[3],  # Right Shoulder
-                299300,  # Hardcoded value
-                299100,  # Hardcoded value
-                -1,  # Placeholder for the four FF bytes
-                self.weapon_fields[4]  # Core Expansion
-            ]
-            for weapon_field in weapon_fields:
-                if weapon_field == -1:
-                    assemble_data.write(b'\xFF\xFF\xFF\xFF')
-                else:
-                    if isinstance(weapon_field, int):
-                        weapon_id = weapon_field
-                    else:
-                        weapon_id = int(weapon_field.currentText().split(' ')[0].strip())
-                    assemble_data.write(equipment_id_to_save_id(weapon_id, 'weapon'))
-
-            assemble_header = ChunkHeader('Assemble', len(assemble_data.getvalue()), 3)
-            modified_data.write(assemble_header.to_bytes())
-            modified_data.write(assemble_data.getvalue())
-
-            # Write the color sets
-            color_set_data = BytesIO()
-            for i, section in enumerate(self.coloring_sections):
-                section_data_bytes = section.export_settings().to_bytes()
-                color_set_data.write(section_data_bytes)
-                # Write dummy data for unknown sections
-                if i == 4:  # After Right weapon
-                    for _ in range(2):
-                        color_set_data.write(section_data_bytes)  # Repeat Right weapon data
-                elif i == 7:  # After Left weapon
-                    for _ in range(3):
-                        color_set_data.write(section_data_bytes)  # Repeat Left weapon data
-
-            # Update the "Coloring" header with the actual length
-            coloring_header = ChunkHeader('Coloring', len(color_set_data.getvalue()), 3)
-            modified_data.write(coloring_header.to_bytes())
-            # Write the color set data
-            modified_data.write(color_set_data.getvalue())
-
-            # Write the stored end data (UserImage and beyond)
-            if end_data:
-                modified_data.write(end_data)
-            else:
-                # Create empty chunks for UserImage and ----  end  ----
-                userimage_header = ChunkHeader("UserImage", 4, 0)
-                modified_data.write(userimage_header.to_bytes())
-                modified_data.write(b"\x00\x00\x00\x00")
-
-                # Create Decal chunk
-                decal_data = BytesIO()
-                decal_slot_count = 5
-                for k in range(decal_slot_count):
-                    decal_count = 1
-                    decal_data.write(struct.pack('<I', decal_count))
-                    for j in range(decal_count):
-                        decal_data.write(struct.pack('<I', 0))  # imageId
-                        decal_data.write(struct.pack('<fffffffff', 0, 0, 0, 0, 0, 0, 0, 0, 0))  # unk04 to unk24
-                        decal_data.write(struct.pack('<II', 0, 0))  # unk28 and unk2c
-                        decal_data.write(struct.pack('<f', 0))  # unk30
-                        decal_data.write(struct.pack('<HHI', 0, 0, 0))  # unk34, unk36, unk38
-                        decal_data.write(struct.pack('<BBBB', 0, 0, 0, 0))  # unk3c, unk3d, unk3e, unk3f
-                decal_header = ChunkHeader('Decal', len(decal_data.getvalue()), 1)
-                modified_data.write(decal_header.to_bytes())
-                modified_data.write(decal_data.getvalue())
-
-                # Create Marking chunk
-                marking_data = BytesIO()
-                marking_version = 2
-                slot_count = 17
-                decal_ids = [0] * slot_count
-                use_emblem = [0] * slot_count
-                marking_data.write(struct.pack(f'<{slot_count}I', *decal_ids))
-                marking_data.write(struct.pack(f'<{slot_count}B', *use_emblem))
-                marking_header = ChunkHeader('Marking', len(marking_data.getvalue()), marking_version)
-                modified_data.write(marking_header.to_bytes())
-                modified_data.write(marking_data.getvalue())
-
-                end_header = ChunkHeader("----  end  ----", 0, 0)
-                modified_data.write(end_header.to_bytes())
+            design_data = self.generate_design_from_ui()
             # Save the modified data to the selected file path
             with open(file_path, 'wb') as file:
-                file.write(modified_data.getvalue())
+                file.write(design_data)
 
-            print(f"File saved as: {file_path}")
+            QMessageBox.information(self, "Save Complete", f"Design file saved as {file_path}.")
 
 def get_github_release(repo_owner, repo_name, tag=None) -> (str, list):
     if tag:
@@ -1356,6 +1876,14 @@ def check_tools():
     with open(VERSIONS_FILE, 'r') as file:
         versions = json.load(file)
 
+    global texconv_path
+    texconv_path = os.path.join(TOOLS_FOLDER, "DirectXTex", "texconv.exe")
+    os.makedirs(os.path.join(TOOLS_FOLDER, "DirectXTex"), exist_ok=True)
+    latest_texconv_release = get_github_release("microsoft", "DirectXTex")
+    if latest_texconv_release and versions.get("texconv", "0.0") != latest_texconv_release[0]:
+        DownloadDialog(f"Downloading texconv", "https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe", texconv_path).exec()
+        versions["texconv"] = latest_texconv_release[0]
+
     witchy_dir = os.path.join(TOOLS_FOLDER, "witchybnd")
     os.makedirs(witchy_dir, exist_ok=True)
     latest_witchy_release = get_github_release("ividyon", "WitchyBND")
@@ -1368,6 +1896,7 @@ def check_tools():
         versions["witchy"] = latest_witchy_release[0]
     global witchy_path
     witchy_path = os.path.join(witchy_dir, "WitchyBND.exe")
+
 
 
 if __name__ == '__main__':
