@@ -97,11 +97,6 @@ def encrypt_file(input_file):
         file.write(cipher.iv)
         file.write(ciphertext)
 
-def resource_path(relative_path):
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
-
 class CustomCheckBox(QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -901,7 +896,7 @@ class DesignDecompressor(QWidget):
         parts_line.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(parts_line)
 
-        if not os.path.exists(resource_path("parts.json")):
+        if not os.path.exists("parts.json"):
             parts_base = {
                 "Protectors": {
                     "Head": [],
@@ -922,7 +917,7 @@ class DesignDecompressor(QWidget):
                     "CExpansion": []
                 }
             }
-            with open(resource_path("parts.json"), "w") as file:
+            with open("parts.json", "w") as file:
                 json.dump(parts_base, file)
 
 
@@ -1002,7 +997,7 @@ class DesignDecompressor(QWidget):
             weapons_layout.addLayout(row_layout)
         layout.addLayout(weapons_layout)
 
-        self.import_regbin(resource_path("resources/regulation.bin"))
+        self.import_regbin("resources/regulation.bin")
 
         # Navigation row
         nav_layout = QHBoxLayout()
@@ -1181,7 +1176,7 @@ class DesignDecompressor(QWidget):
         protector_types = ["Head", "Core", "Arms", "Legs"]
         inner_types = ["Booster", "Generator", "FCS"]
 
-        with open(resource_path("parts.json"), 'r') as file:
+        with open("parts.json", 'r') as file:
             data = json.load(file)
             protectors = data["Protectors"]
             internals = data["Internals"]
@@ -1198,7 +1193,7 @@ class DesignDecompressor(QWidget):
     def load_weapons(self):
         cwd = os.getcwd()
         slots = ["LHand", "RHand", "LBack", "RBack", "CExpansion"]
-        with open(resource_path("parts.json"), 'r') as file:
+        with open("parts.json", 'r') as file:
             data = json.load(file)
             weapons = data["Weapons"]
             for i, weapon_field in enumerate(self.weapon_fields):
@@ -1229,7 +1224,7 @@ class DesignDecompressor(QWidget):
             file_path, _ = QFileDialog.getOpenFileName(self, 'Select regulation.bin', '', 'regulation.bin (regulation.bin)')
         if file_path:
             with tempfile.TemporaryDirectory() as temp_dir:
-                with open(resource_path("parts.json"), 'r') as file:
+                with open("parts.json", 'r') as file:
                     parts_data = json.load(file)
                 # Copy the regulation.bin file to the temporary directory
                 shutil.copy(file_path, os.path.join(temp_dir, 'regulation.bin'))
@@ -1396,7 +1391,7 @@ class DesignDecompressor(QWidget):
                                     for part in parts_data['Internals'][category]:
                                         update_part_name(part, texts)
 
-                with open(resource_path("parts.json"), 'w') as file:
+                with open("parts.json", 'w') as file:
                     json.dump(parts_data, file, indent=4)
 
                 # Cleanup will be handled automatically by tempfile
@@ -1439,7 +1434,7 @@ class DesignDecompressor(QWidget):
                 shutil.copy(file_path, temp_sl2_path)
 
                 # Run the external exe with the copied .sl2 path as argument
-                exe_path = resource_path("resources/DesignDump.exe")
+                exe_path = "resources/DesignDump.exe"
                 process = subprocess.Popen([exe_path, temp_sl2_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 stdout, _ = process.communicate()
 
@@ -1911,7 +1906,7 @@ if __name__ == '__main__':
         "red": "#7a3a3a"
     }
 
-    stylesheet = open(os.path.join(os.path.dirname(__file__), "stylesheet.qss")).read()
+    stylesheet = open(os.path.join(os.path.dirname(__file__), "resources", "resources/stylesheet.qss")).read()
 
     for colorKey, colorValue in colors_dict.items():
         stylesheet = stylesheet.replace("{" + colorKey + "}", colorValue)
