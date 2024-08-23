@@ -1906,7 +1906,7 @@ if __name__ == '__main__':
         "red": "#7a3a3a"
     }
 
-    stylesheet = open(os.path.join(os.path.dirname(__file__), "resources", "resources/stylesheet.qss")).read()
+    stylesheet = open(os.path.join(os.path.dirname(__file__), "resources", "stylesheet.qss")).read()
 
     for colorKey, colorValue in colors_dict.items():
         stylesheet = stylesheet.replace("{" + colorKey + "}", colorValue)
