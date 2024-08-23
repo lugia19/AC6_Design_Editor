@@ -1,0 +1,4 @@
+requests
+PyQt6
+platformdirs
+xmltodict
