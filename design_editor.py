@@ -1075,7 +1075,7 @@ class DesignDecompressor(QWidget):
         load_from_file_button.clicked.connect(self.browse_design_file)
         load_from_save_button = QPushButton('Load from .sl2')
         load_from_save_button.clicked.connect(self.load_from_save)
-
+        load_from_save_button.setEnabled(False)
         import_regbin_button = QPushButton('Import mod parts')
         import_regbin_button.clicked.connect(self.import_regbin)
 
