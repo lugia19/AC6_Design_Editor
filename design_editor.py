@@ -61,8 +61,13 @@ weathering_list = ['Weathered 0 (None)']
 for i in range(23):
     weathering_list.append(f"Weathered {i}")
 
-witchy_path = None
+TOOLS_FOLDER = platformdirs.user_data_dir(appauthor="lugia19", roaming=True, appname="ac6_tools")
+VERSIONS_FILE = os.path.join(TOOLS_FOLDER, "versions.json")
+
+witchy_dir = os.path.join(TOOLS_FOLDER, "witchybnd")
+witchy_path = os.path.join(witchy_dir, "WitchyBND.exe")
 texconv_path = None
+
 def run_witchy(path:str, recursive:bool=False):
     #args = ["-p", f"\"{path}\""]
     args = [witchy_path, "-s", path]
@@ -841,6 +846,43 @@ def process_coloring_bytes(coloring_bytes):
 
     return coloring_sections
 
+
+def read_section_value(data, start_marker, instance=0):
+    start_index = -1
+    instance_count = 0
+    search_start = 0
+
+    while instance_count <= instance:
+        start_index = data.find(start_marker, search_start)
+        if start_index == -1:
+            return None
+        instance_count += 1
+        search_start = start_index + len(start_marker)
+
+    chunk_header_bytes = data[start_index:start_index + 0x20]
+    chunk_header = ChunkHeader.from_bytes(chunk_header_bytes)
+    value_start = start_index + 0x20
+    value_bytes = data[value_start:value_start + chunk_header.length]
+
+    # Strip trailing zero bytes
+    while value_bytes and value_bytes[-1] == 0:
+        value_bytes = value_bytes[:-1]
+
+    return chunk_header, value_bytes
+
+
+def convert_to_string(value_bytes):
+    if value_bytes is not None:
+        # Strip trailing zero bytes
+        while value_bytes and value_bytes[-1] == 0:
+            value_bytes = value_bytes[:-1]
+
+        value = ''.join(chr(b) for b in value_bytes[::2])
+        return value
+    else:
+        return None
+
+
 class DesignDecompressor(QWidget):
     def __init__(self):
         super().__init__()
@@ -1075,7 +1117,6 @@ class DesignDecompressor(QWidget):
         load_from_file_button.clicked.connect(self.browse_design_file)
         load_from_save_button = QPushButton('Load from .sl2')
         load_from_save_button.clicked.connect(self.load_from_save)
-        load_from_save_button.setEnabled(False)
         import_regbin_button = QPushButton('Import mod parts')
         import_regbin_button.clicked.connect(self.import_regbin)
 
@@ -1096,6 +1137,8 @@ class DesignDecompressor(QWidget):
         bottom_row_layout.addWidget(save_design_button)
         self.root_layout.addLayout(bottom_row_layout)
 
+        self.stored_original_design = None
+
         self.setLayout(self.root_layout)
         self.fix_size()
 
@@ -1103,6 +1146,7 @@ class DesignDecompressor(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Design File', '', 'All Files (*)')
         if file_path:
             self.userimage_textbox.setText(file_path)
+            self.stored_original_design = None
 
     def erase_userimage_file(self):
         self.userimage_textbox.clear()
@@ -1422,7 +1466,8 @@ class DesignDecompressor(QWidget):
                 print("File not found. Please check the file path.")
                 raise e
             self.read_sections(decompressed_data)
-            self.userimage_textbox.setText(file_path)  # Set the filepath in the textbox
+            self.stored_original_design = None
+            self.userimage_textbox.setText(file_path)
 
     def load_from_save(self):
         appdata_path = os.path.expandvars("%AppData%")
@@ -1434,28 +1479,43 @@ class DesignDecompressor(QWidget):
                 temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
                 shutil.copy(file_path, temp_sl2_path)
 
-                # Run the external exe with the copied .sl2 path as argument
-                exe_path = "resources/DesignDump.exe"
-                process = subprocess.Popen([exe_path, temp_sl2_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                stdout, _ = process.communicate()
+                # Unpack the .sl2 file using run_witchy
+                run_witchy(temp_sl2_path, True)
 
-                # Parse the console output to get the design names
-                design_names = re.findall(r"USER_DATA\d+\[\d+\]\.design <- .*", stdout)
+                # Find the unpacked folder
+                unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
+                unpacked_path = os.path.join(temp_dir, unpacked_folder)
 
-                # Extract only the second part of the design names (without filenames)
-                design_labels = [name.split("<-")[1].strip() for name in design_names]
+                all_presets:List[Preset] = []
+                for current_data in range(2, 7):  # USER_DATA002 to USER_DATA006
+                    data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
+                    if os.path.exists(data_path):
+                        decrypt_file(data_path)
+                        with open(data_path, "rb") as file:
+                            data = file.read()
+                            user_data = UserDesignData.from_bytes(data)
+                            all_presets.extend(user_data.presets)  # Assuming presets are stored in a 'presets' attribute
+                all_designs = [x.design.decompress() for x in all_presets]
+
+                design_labels = []
+                for design in all_designs:
+                    _, data_name_bytes = read_section_value(design, b'DataName')
+                    _, ac_name_bytes = read_section_value(design, b'AcName')
+
+                    data_name = convert_to_string(data_name_bytes)
+                    ac_name = convert_to_string(ac_name_bytes)
+                    design_labels.append(f"{ac_name} // {data_name}")
+
+
 
                 # Show a dialog with a dropdown listing the design labels
                 design_label, ok = QInputDialog.getItem(self, "Select Design", "Choose a design:", design_labels, 0, False)
                 if ok and design_label:
-                    # Find the corresponding full design name based on the selected label
-                    selected_design_name = next(name for name in design_names if name.endswith(design_label))
-
-                    # Extract the filename from the selected design name
-                    filename = selected_design_name.split(" <- ")[0]
-                    design_folder = os.path.join(temp_dir, f"{os.path.basename(file_path)}-design")
-                    design_file = os.path.join(design_folder, filename)
-                    self.load_design_file(design_file)
+                    design_index = design_labels.index(design_label)
+                    chosen_design = all_designs[design_index]
+                    self.read_sections(chosen_design)
+                    self.userimage_textbox.setText("Loaded from .sl2")
+                    self.stored_original_design = chosen_design
 
     def try_decompress(self, data):
         try:
@@ -1491,19 +1551,19 @@ class DesignDecompressor(QWidget):
             raise e
 
     def read_sections(self, decompressed_bytes):
-        _, ugc_id_bytes = self.read_section_value(decompressed_bytes, b'UgcID')
-        _, data_name_bytes = self.read_section_value(decompressed_bytes, b'DataName')
-        _, ac_name_bytes = self.read_section_value(decompressed_bytes, b'AcName')
+        _, ugc_id_bytes = read_section_value(decompressed_bytes, b'UgcID')
+        _, data_name_bytes = read_section_value(decompressed_bytes, b'DataName')
+        _, ac_name_bytes = read_section_value(decompressed_bytes, b'AcName')
 
-        ugc_id = self.convert_to_string(ugc_id_bytes)
-        data_name = self.convert_to_string(data_name_bytes)
-        ac_name = self.convert_to_string(ac_name_bytes)
+        ugc_id = convert_to_string(ugc_id_bytes)
+        data_name = convert_to_string(data_name_bytes)
+        ac_name = convert_to_string(ac_name_bytes)
 
         self.ugc_id_field.setText(ugc_id)
         self.data_name_field.setText(data_name)
         self.ac_name_field.setText(ac_name)
 
-        _, assemble_bytes = self.read_section_value(decompressed_bytes, b'Assemble')
+        _, assemble_bytes = read_section_value(decompressed_bytes, b'Assemble')
         if assemble_bytes is not None:
             parts, weapons = process_assemble_bytes(assemble_bytes)
             if parts is not None and weapons is not None:
@@ -1530,44 +1590,10 @@ class DesignDecompressor(QWidget):
         else:
             print("Assemble section not found.")
 
-        _, coloring_bytes = self.read_section_value(decompressed_bytes, b'Coloring')
+        _, coloring_bytes = read_section_value(decompressed_bytes, b'Coloring')
         color_datas = process_coloring_bytes(coloring_bytes)
         for i in range(len(self.coloring_sections)):
             self.coloring_sections[i].import_settings(color_datas[i])
-
-    def convert_to_string(self, value_bytes):
-        if value_bytes is not None:
-            # Strip trailing zero bytes
-            while value_bytes and value_bytes[-1] == 0:
-                value_bytes = value_bytes[:-1]
-
-            value = ''.join(chr(b) for b in value_bytes[::2])
-            return value
-        else:
-            return None
-
-    def read_section_value(self, data, start_marker, instance=0):
-        start_index = -1
-        instance_count = 0
-        search_start = 0
-
-        while instance_count <= instance:
-            start_index = data.find(start_marker, search_start)
-            if start_index == -1:
-                return None
-            instance_count += 1
-            search_start = start_index + len(start_marker)
-
-        chunk_header_bytes = data[start_index:start_index + 0x20]
-        chunk_header = ChunkHeader.from_bytes(chunk_header_bytes)
-        value_start = start_index + 0x20
-        value_bytes = data[value_start:value_start + chunk_header.length]
-
-        # Strip trailing zero bytes
-        while value_bytes and value_bytes[-1] == 0:
-            value_bytes = value_bytes[:-1]
-
-        return chunk_header, value_bytes
 
     def save_to_sl2(self):
         appdata_path = os.path.expandvars("%AppData%")
@@ -1686,10 +1712,13 @@ class DesignDecompressor(QWidget):
 
     def generate_design_from_ui(self) -> bytes:
         end_data = None
-        if self.userimage_textbox.text() != "":
+        if self.userimage_textbox.text() != "" or self.stored_original_design:
             # Load the original file
-            with open(self.userimage_textbox.text(), 'rb') as file:
-                original_data = file.read()
+            if self.userimage_textbox.text() != "" and os.path.exists(self.userimage_textbox.text()):
+                with open(self.userimage_textbox.text(), 'rb') as file:
+                    original_data = file.read()
+            else:
+                original_data = self.stored_original_design
 
             # Check if the file needs to be decompressed
             if original_data.startswith(b'ASMC'):
@@ -1869,8 +1898,6 @@ def get_github_release(repo_owner, repo_name, tag=None) -> (str, list):
         return None
 
 
-TOOLS_FOLDER = platformdirs.user_data_dir(appauthor="lugia19", roaming=True, appname="ac6_tools")
-VERSIONS_FILE = os.path.join(TOOLS_FOLDER, "versions.json")
 
 def check_tools():
     os.makedirs(TOOLS_FOLDER, exist_ok=True)
@@ -1890,7 +1917,6 @@ def check_tools():
         DownloadDialog(f"Downloading texconv", "https://github.com/microsoft/DirectXTex/releases/latest/download/texconv.exe", texconv_path).exec()
         versions["texconv"] = latest_texconv_release[0]
 
-    witchy_dir = os.path.join(TOOLS_FOLDER, "witchybnd")
     os.makedirs(witchy_dir, exist_ok=True)
     latest_witchy_release = get_github_release("ividyon", "WitchyBND")
     if latest_witchy_release and versions.get("witchy", "0.0") != latest_witchy_release[0]:
@@ -1900,8 +1926,7 @@ def check_tools():
             zip_ref.extractall(witchy_dir)
 
         versions["witchy"] = latest_witchy_release[0]
-    global witchy_path
-    witchy_path = os.path.join(witchy_dir, "WitchyBND.exe")
+
 
 
 
