@@ -1383,6 +1383,8 @@ class DesignDecompressor(QWidget):
                                     part_types.append('RBack')
                                 if row.get('@equipBackLeftSlot') == '1':
                                     part_types.append('LBack')
+                                if row.get('@coreExpansionEffect_Display') is not None:
+                                    part_types.append("CExpansion")
 
                                 # Check if the part already exists in parts_data
                                 existing_part = None
