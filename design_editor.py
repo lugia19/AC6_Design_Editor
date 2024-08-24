@@ -1644,107 +1644,112 @@ class DesignDecompressor(QWidget):
 
             max_category_size = 40
             max_file_presets = 32
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Copy the selected .sl2 file to the temporary directory
-                temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
-                shutil.copy(file_path, temp_sl2_path)
 
-                # Unpack the .sl2 file using run_witchy
-                run_witchy(temp_sl2_path, True)
+            temp_dir = os.path.join(TOOLS_FOLDER, "temp_sl2_dir")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(os.path.join(TOOLS_FOLDER, "temp_sl2_dir"))
+            os.makedirs(temp_dir, exist_ok=True)
 
-                # Find the unpacked folder
-                unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
-                unpacked_path = os.path.join(temp_dir, unpacked_folder)
+            # Copy the selected .sl2 file to the temporary directory
+            temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
+            shutil.copy(file_path, temp_sl2_path)
 
-                # Create a subfolder for encrypted backups
-                encrypted_backup_path = os.path.join(temp_dir, "encrypted_backup")
-                os.mkdir(encrypted_backup_path)
+            # Unpack the .sl2 file using run_witchy
+            run_witchy(temp_sl2_path)
 
-                # Copy all encrypted files to the backup folder
-                for root, _, files in os.walk(unpacked_path):
-                    for file in files:
-                        if not file.endswith(".xml"):
-                            src = os.path.join(root, file)
-                            dst = os.path.join(encrypted_backup_path, file)
-                            shutil.copy(src, dst)
+            # Find the unpacked folder
+            unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
+            unpacked_path = os.path.join(temp_dir, unpacked_folder)
 
-                preset_count = 99
-                data = None
-                current_data = 1
-                while preset_count >= max_file_presets:
-                    current_data += 1  # We start at USER_DATA_002
-                    if current_data > 6:
-                        break
-                    data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
-                    decrypt_file(data_path)
-                    with open(data_path, "rb") as file:
-                        data = file.read()
-                        preset_count = struct.unpack_from('<I', data, 0x10)[0]
-                if current_data > 6:
-                    QMessageBox.critical(None, "Error", f"You don't have any slots remaining in this save file!")
-                    return
+            # Create a subfolder for encrypted backups
+            encrypted_backup_path = os.path.join(temp_dir, "encrypted_backup")
+            os.mkdir(encrypted_backup_path)
 
-                user_data_final = UserDesignData.from_bytes(data)
-
-                # Now we gotta figure out to which category we want to add it to.
-                # Iterate over USER_DATA002-006 and collect presets by category
-                presets_by_category = {i + 1: [] for i in range(4)}
-                for i in range(2, 7):
-                    user_data_path = os.path.join(unpacked_path, f"USER_DATA00{i}")
-                    if i != current_data:
-                        decrypt_file(user_data_path)
-                    with open(user_data_path, "rb") as file:
-                        user_data_content = file.read()
-                    if i != current_data:
-                        encrypt_file(user_data_path)
-
-                    user_data = UserDesignData.from_bytes(user_data_content)
-                    for preset in user_data.presets:
-                        category = preset.category
-                        presets_by_category[category].append(preset)
-
-                # Find categories with less than 40 members
-                categories_under_capacity = [f"Tab {category}" for category, presets in presets_by_category.items() if len(presets) < max_category_size]
-
-                # Present a dialog for the user to choose a category
-                category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories_under_capacity, 0, False)
-                if ok and category:
-                    selected_category = int(category.split(" ")[1])
-                else:
-                    return
-
-                thumbnail = ACThumbnail.empty_thumbnail()
-                reply = QMessageBox.question(self, 'Thumbnail',
-                                             'Do you want to add a thumbnail?',
-                                             QMessageBox.StandardButton.Yes |
-                                             QMessageBox.StandardButton.No,
-                                             QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.Yes:
-                    fname, _ = QFileDialog.getOpenFileName(None, 'Open file',
-                                                           filter="Image files (*.jpg *.png *.bmp)")
-                    if fname:
-                        thumbnail = ACThumbnail.from_image(fname)
-
-                new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
-                                    thumbnail=thumbnail)
-                user_data_final.add_preset(new_preset)
-
-                with open(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"), "wb") as file:
-                    file.write(user_data_final.to_bytes())
-
-                # Encrypt only the modified file
-                encrypt_file(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"))
-
-                # Copy back all other encrypted files from the backup
-                for file in os.listdir(encrypted_backup_path):
-                    if file != f"USER_DATA0{str(current_data).zfill(2)}":
-                        src = os.path.join(encrypted_backup_path, file)
-                        dst = os.path.join(unpacked_path, file)
+            # Copy all encrypted files to the backup folder
+            for root, _, files in os.walk(unpacked_path):
+                for file in files:
+                    if not file.endswith(".xml"):
+                        src = os.path.join(root, file)
+                        dst = os.path.join(encrypted_backup_path, file)
                         shutil.copy(src, dst)
 
-                run_witchy(unpacked_path)
-                shutil.copy(temp_sl2_path, file_path)
-                time.sleep(1)
+            preset_count = 99
+            data = None
+            current_data = 1
+            while preset_count >= max_file_presets:
+                current_data += 1  # We start at USER_DATA_002
+                if current_data > 6:
+                    break
+                data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
+                decrypt_file(data_path)
+                with open(data_path, "rb") as file:
+                    data = file.read()
+                    preset_count = struct.unpack_from('<I', data, 0x10)[0]
+            if current_data > 6:
+                QMessageBox.critical(None, "Error", f"You don't have any slots remaining in this save file!")
+                return
+
+            user_data_final = UserDesignData.from_bytes(data)
+
+            # Now we gotta figure out to which category we want to add it to.
+            # Iterate over USER_DATA002-006 and collect presets by category
+            presets_by_category = {i + 1: [] for i in range(4)}
+            for i in range(2, 7):
+                user_data_path = os.path.join(unpacked_path, f"USER_DATA00{i}")
+                if i != current_data:
+                    decrypt_file(user_data_path)
+                with open(user_data_path, "rb") as file:
+                    user_data_content = file.read()
+                if i != current_data:
+                    encrypt_file(user_data_path)
+
+                user_data = UserDesignData.from_bytes(user_data_content)
+                for preset in user_data.presets:
+                    category = preset.category
+                    presets_by_category[category].append(preset)
+
+            # Find categories with less than 40 members
+            categories_under_capacity = [f"Tab {category}" for category, presets in presets_by_category.items() if len(presets) < max_category_size]
+
+            # Present a dialog for the user to choose a category
+            category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories_under_capacity, 0, False)
+            if ok and category:
+                selected_category = int(category.split(" ")[1])
+            else:
+                return
+
+            thumbnail = ACThumbnail.empty_thumbnail()
+            reply = QMessageBox.question(self, 'Thumbnail',
+                                         'Do you want to add a thumbnail?',
+                                         QMessageBox.StandardButton.Yes |
+                                         QMessageBox.StandardButton.No,
+                                         QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                fname, _ = QFileDialog.getOpenFileName(None, 'Open file',
+                                                       filter="Image files (*.jpg *.png *.bmp)")
+                if fname:
+                    thumbnail = ACThumbnail.from_image(fname)
+
+            new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
+                                thumbnail=thumbnail)
+            user_data_final.add_preset(new_preset)
+
+            with open(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"), "wb") as file:
+                file.write(user_data_final.to_bytes())
+
+            # Encrypt only the modified file
+            encrypt_file(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"))
+
+            # Copy back all other encrypted files from the backup
+            for file in os.listdir(encrypted_backup_path):
+                if file != f"USER_DATA0{str(current_data).zfill(2)}":
+                    src = os.path.join(encrypted_backup_path, file)
+                    dst = os.path.join(unpacked_path, file)
+                    shutil.copy(src, dst)
+
+            run_witchy(unpacked_path)
+            time.sleep(1)
+            shutil.copy(temp_sl2_path, file_path)
             QMessageBox.information(self, "Save Complete", f"Design added to save file.")
 
     def generate_design_from_ui(self) -> bytes:
