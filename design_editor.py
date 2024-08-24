@@ -15,7 +15,7 @@ import zlib, struct
 
 import platformdirs as platformdirs
 import requests
-from typing import List, Union
+from typing import List, Union, Dict
 
 import xmltodict
 from Crypto.Cipher import AES
@@ -883,6 +883,38 @@ def convert_to_string(value_bytes):
         return None
 
 
+def get_all_designs_from_save(file_path):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Copy the selected .sl2 file to the temporary directory
+        temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
+        shutil.copy(file_path, temp_sl2_path)
+
+        # Unpack the .sl2 file using run_witchy
+        run_witchy(temp_sl2_path, True)
+
+        # Find the unpacked folder
+        unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
+        unpacked_path = os.path.join(temp_dir, unpacked_folder)
+
+        all_presets: Dict[str, List[Preset]] = {}
+        for current_data in range(2, 7):  # USER_DATA002 to USER_DATA006
+            filename = f"USER_DATA0{str(current_data).zfill(2)}"
+            data_path = os.path.join(unpacked_path,filename)
+            if os.path.exists(data_path):
+                decrypt_file(data_path)
+                with open(data_path, "rb") as file:
+                    data = file.read()
+                    user_data = UserDesignData.from_bytes(data)
+                    if filename not in all_presets:
+                        all_presets[filename] = []
+                    all_presets[filename].extend(user_data.presets)
+        all_designs = {}
+        for filename, presets in all_presets.items():
+            all_designs[filename] = [x.design.decompress() for x in presets]
+
+        return all_designs
+
+
 class DesignDecompressor(QWidget):
     def __init__(self):
         super().__init__()
@@ -1117,8 +1149,11 @@ class DesignDecompressor(QWidget):
         load_from_file_button.clicked.connect(self.browse_design_file)
         load_from_save_button = QPushButton('Load from .sl2')
         load_from_save_button.clicked.connect(self.load_from_save)
+
         import_regbin_button = QPushButton('Import mod parts')
         import_regbin_button.clicked.connect(self.import_regbin)
+        extract_all_button = QPushButton("Extract designs from .sl2")
+        extract_all_button.clicked.connect(self.dump_designs)
 
         bottom_row_layout.addWidget(load_from_file_button)
         bottom_row_layout.addWidget(load_from_save_button)
@@ -1126,6 +1161,7 @@ class DesignDecompressor(QWidget):
         bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(import_regbin_button)
+        bottom_row_layout.addWidget(extract_all_button)
         bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(QLabel(""))
 
@@ -1469,53 +1505,54 @@ class DesignDecompressor(QWidget):
             self.stored_original_design = None
             self.userimage_textbox.setText(file_path)
 
+    def dump_designs(self):
+        appdata_path = os.path.expandvars("%AppData%")
+        default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        if file_path:
+            all_designs = get_all_designs_from_save(file_path)
+            output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+            for filename, design_list in all_designs.items():
+                for idx, design_bytes in enumerate(design_list):
+                    _, data_name_bytes = read_section_value(design_bytes, b'DataName')
+                    _, ac_name_bytes = read_section_value(design_bytes, b'AcName')
+                    data_name = convert_to_string(data_name_bytes).replace(" ", "_")
+                    ac_name = convert_to_string(ac_name_bytes).replace(" ", "_")
+                    # Create filename
+                    design_filename = f"{filename}[{idx}]_({data_name}_{ac_name}).design"
+                    design_filename = ''.join(c for c in design_filename if c.isalnum() or c in ['_', '-', "[", "]", ".", "(", ")"])  # Sanitize filename
+
+                    # Save the design file
+                    with open(os.path.join(output_dir, design_filename), 'wb') as design_file:
+                        design_file.write(design_bytes)
+            QMessageBox.information(self, "Extract Complete", f"All design files extracted.")
     def load_from_save(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
         if file_path:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Copy the selected .sl2 file to the temporary directory
-                temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
-                shutil.copy(file_path, temp_sl2_path)
+            designs_dict = get_all_designs_from_save(file_path)
+            all_designs = []
+            for design_list in designs_dict.values():
+                all_designs.extend(design_list)
 
-                # Unpack the .sl2 file using run_witchy
-                run_witchy(temp_sl2_path, True)
+            design_labels = []
+            for design in all_designs:
+                _, data_name_bytes = read_section_value(design, b'DataName')
+                _, ac_name_bytes = read_section_value(design, b'AcName')
 
-                # Find the unpacked folder
-                unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
-                unpacked_path = os.path.join(temp_dir, unpacked_folder)
+                data_name = convert_to_string(data_name_bytes)
+                ac_name = convert_to_string(ac_name_bytes)
+                design_labels.append(f"{ac_name} // {data_name}")
 
-                all_presets:List[Preset] = []
-                for current_data in range(2, 7):  # USER_DATA002 to USER_DATA006
-                    data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
-                    if os.path.exists(data_path):
-                        decrypt_file(data_path)
-                        with open(data_path, "rb") as file:
-                            data = file.read()
-                            user_data = UserDesignData.from_bytes(data)
-                            all_presets.extend(user_data.presets)  # Assuming presets are stored in a 'presets' attribute
-                all_designs = [x.design.decompress() for x in all_presets]
-
-                design_labels = []
-                for design in all_designs:
-                    _, data_name_bytes = read_section_value(design, b'DataName')
-                    _, ac_name_bytes = read_section_value(design, b'AcName')
-
-                    data_name = convert_to_string(data_name_bytes)
-                    ac_name = convert_to_string(ac_name_bytes)
-                    design_labels.append(f"{ac_name} // {data_name}")
-
-
-
-                # Show a dialog with a dropdown listing the design labels
-                design_label, ok = QInputDialog.getItem(self, "Select Design", "Choose a design:", design_labels, 0, False)
-                if ok and design_label:
-                    design_index = design_labels.index(design_label)
-                    chosen_design = all_designs[design_index]
-                    self.read_sections(chosen_design)
-                    self.userimage_textbox.setText("Loaded from .sl2")
-                    self.stored_original_design = chosen_design
+            # Show a dialog with a dropdown listing the design labels
+            design_label, ok = QInputDialog.getItem(self, "Select Design", "Choose a design:", design_labels, 0, False)
+            if ok and design_label:
+                design_index = design_labels.index(design_label)
+                chosen_design = all_designs[design_index]
+                self.read_sections(chosen_design)
+                self.userimage_textbox.setText("Loaded from .sl2")
+                self.stored_original_design = chosen_design
 
     def try_decompress(self, data):
         try:
