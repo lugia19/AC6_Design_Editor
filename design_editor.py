@@ -1159,10 +1159,8 @@ class DesignDecompressor(QWidget):
         bottom_row_layout.addWidget(load_from_save_button)
 
         bottom_row_layout.addWidget(QLabel(""))
-        bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(import_regbin_button)
         bottom_row_layout.addWidget(extract_all_button)
-        bottom_row_layout.addWidget(QLabel(""))
         bottom_row_layout.addWidget(QLabel(""))
 
         save_design_button = QPushButton('Save .design')
