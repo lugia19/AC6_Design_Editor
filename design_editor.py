@@ -1,5 +1,6 @@
 import copy
 import datetime
+import filecmp
 import hashlib
 import json
 import math
@@ -392,6 +393,7 @@ class Preset:
         return preset_data
 
 class UserDesignData:
+    inner_size = 4194320
     def __init__(self, unk0c, unk04, unk08, presets):
         self.unk0c = unk0c
         self.unk04 = unk04
@@ -426,32 +428,28 @@ class UserDesignData:
         return instance
 
     def to_bytes(self):
-        inner_size = 4194320
-
         # Calculate the inner content
         header = struct.pack("<IIII", 0, 0, len(self.presets), len(self.presets))
         preset_data = b"".join(preset.to_bytes() for preset in self.presets)
 
         # Pad the preset_data with zeros to reach the fixed size
-        padding_length = inner_size - len(header) - len(preset_data) - 16  # 16 is for MD5 hash
+        padding_length = self.inner_size - len(header) - len(preset_data) - 16  # 16 is for MD5 hash
         if padding_length < 0:
             raise ValueError("Preset data exceeds the fixed inner size")
 
-        padded_preset_data = preset_data + b'\x00' * padding_length
-
-        inner_content = header + padded_preset_data
+        inner_content = header + preset_data + b'\x00' * padding_length
 
         # Calculate MD5 hash
         md5_hash = hashlib.md5(inner_content).digest()
 
         # Create the full content with size, inner content, and hash
-        full_content = struct.pack("<I", inner_size) + inner_content + md5_hash
+        full_content = struct.pack("<I", self.inner_size) + inner_content + md5_hash
 
         # Calculate padding
         padding_size = (16 - (len(full_content) % 16)) % 16
         full_content += b'\x0C' * padding_size
 
-        return full_content
+        return full_content, len(preset_data)+len(header)+16+16
 
     def add_preset(self, preset):
         self.presets.append(preset)
@@ -1642,9 +1640,6 @@ class DesignDecompressor(QWidget):
             backup_path = os.path.join(os.path.dirname(file_path), backup_filename)
             shutil.copy(file_path, backup_path)
 
-            max_category_size = 40
-            max_file_presets = 32
-
             temp_dir = os.path.join(TOOLS_FOLDER, "temp_sl2_dir")
             if os.path.exists(temp_dir):
                 shutil.rmtree(os.path.join(TOOLS_FOLDER, "temp_sl2_dir"))
@@ -1673,46 +1668,11 @@ class DesignDecompressor(QWidget):
                         dst = os.path.join(encrypted_backup_path, file)
                         shutil.copy(src, dst)
 
-            preset_count = 99
-            data = None
-            current_data = 1
-            while preset_count >= max_file_presets:
-                current_data += 1  # We start at USER_DATA_002
-                if current_data > 6:
-                    break
-                data_path = os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}")
-                decrypt_file(data_path)
-                with open(data_path, "rb") as file:
-                    data = file.read()
-                    preset_count = struct.unpack_from('<I', data, 0x10)[0]
-            if current_data > 6:
-                QMessageBox.critical(None, "Error", f"You don't have any slots remaining in this save file!")
-                return
-
-            user_data_final = UserDesignData.from_bytes(data)
-
-            # Now we gotta figure out to which category we want to add it to.
-            # Iterate over USER_DATA002-006 and collect presets by category
-            presets_by_category = {i + 1: [] for i in range(4)}
-            for i in range(2, 7):
-                user_data_path = os.path.join(unpacked_path, f"USER_DATA00{i}")
-                if i != current_data:
-                    decrypt_file(user_data_path)
-                with open(user_data_path, "rb") as file:
-                    user_data_content = file.read()
-                if i != current_data:
-                    encrypt_file(user_data_path)
-
-                user_data = UserDesignData.from_bytes(user_data_content)
-                for preset in user_data.presets:
-                    category = preset.category
-                    presets_by_category[category].append(preset)
-
-            # Find categories with less than 40 members
-            categories_under_capacity = [f"Tab {category}" for category, presets in presets_by_category.items() if len(presets) < max_category_size]
-
+            categories = []
+            for idx in range(4):
+                categories.append(f"Tab {idx + 1}")
             # Present a dialog for the user to choose a category
-            category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories_under_capacity, 0, False)
+            category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories, 0, False)
             if ok and category:
                 selected_category = int(category.split(" ")[1])
             else:
@@ -1732,23 +1692,74 @@ class DesignDecompressor(QWidget):
 
             new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
                                 thumbnail=thumbnail)
-            user_data_final.add_preset(new_preset)
+            preset_length = len(new_preset.to_bytes())
 
-            with open(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"), "wb") as file:
-                file.write(user_data_final.to_bytes())
+
+            user_data = None
+            data_path = ""
+
+            for data_idx in range(2, 7):
+                data_path = os.path.join(unpacked_path, f"USER_DATA0{str(data_idx).zfill(2)}")
+                decrypt_file(data_path)
+                with open(data_path, "rb") as file:
+                    user_data = UserDesignData.from_bytes(file.read())
+
+                if user_data.to_bytes()[1]+preset_length < UserDesignData.inner_size:
+                    #We have enough space here.
+                    break
+
+                if data_idx == 6:
+                    QMessageBox.critical(None, "Error", f"You don't have any space remaining in this save file!")
+                    return
+
+            user_data.add_preset(new_preset)
+
+            with open(data_path, "wb") as file:
+                file.write(user_data.to_bytes()[0])
 
             # Encrypt only the modified file
-            encrypt_file(os.path.join(unpacked_path, f"USER_DATA0{str(current_data).zfill(2)}"))
+            encrypt_file(data_path)
 
+
+            bname = os.path.basename(data_path)
             # Copy back all other encrypted files from the backup
             for file in os.listdir(encrypted_backup_path):
-                if file != f"USER_DATA0{str(current_data).zfill(2)}":
+                if file != bname:
                     src = os.path.join(encrypted_backup_path, file)
                     dst = os.path.join(unpacked_path, file)
                     shutil.copy(src, dst)
 
             run_witchy(unpacked_path)
-            time.sleep(1)
+
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                verify_sl2_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(temp_sl2_path))[0]}-verify.sl2")
+                shutil.copy(temp_sl2_path, verify_sl2_path)
+
+                verify_unpacked_folder = f"{os.path.splitext(os.path.basename(verify_sl2_path))[0]}-sl2"
+                verify_unpacked_path = os.path.join(temp_dir, verify_unpacked_folder)
+                run_witchy(verify_sl2_path)
+
+                files_match = True
+                for root, _, files in os.walk(unpacked_path):
+                    for file in files:
+                        if "xml" in file.lower():
+                            continue
+                        original_file = os.path.join(root, file)
+                        verify_file = os.path.join(verify_unpacked_path, os.path.relpath(original_file, unpacked_path))
+
+                        if not os.path.exists(verify_file) or not filecmp.cmp(original_file, verify_file, shallow=False):
+                            files_match = False
+
+                shutil.rmtree(verify_unpacked_path)
+                if files_match:
+                    break
+            else:
+                broken_sl2_path = os.path.join(os.path.dirname(file_path), f"{os.path.splitext(os.path.basename(temp_sl2_path))[0]}-broken.sl2")
+                QMessageBox.critical(self, "Verification Failed", f"Unable to verify the save file after multiple attempts. The save might be corrupted. It has been saved as {broken_sl2_path}")
+                shutil.copy(temp_sl2_path, broken_sl2_path)
+                return
+
             shutil.copy(temp_sl2_path, file_path)
             QMessageBox.information(self, "Save Complete", f"Design added to save file.")
 
