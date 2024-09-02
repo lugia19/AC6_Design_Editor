@@ -1506,7 +1506,7 @@ class DesignDecompressor(QWidget):
     def dump_designs(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             all_designs = get_all_designs_from_save(file_path)
             output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
@@ -1527,7 +1527,7 @@ class DesignDecompressor(QWidget):
     def load_from_save(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             designs_dict = get_all_designs_from_save(file_path)
             all_designs = []
@@ -1633,7 +1633,7 @@ class DesignDecompressor(QWidget):
     def save_to_sl2(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Select Save File', default_dir, 'Save Files (*.sl2)')
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             # Backup the original .sl2 file
             backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.sl2"
@@ -1980,6 +1980,8 @@ def check_tools():
 
         versions["witchy"] = latest_witchy_release[0]
 
+    with open(VERSIONS_FILE, 'w') as file:
+        json.dump(versions, file, indent=4)
 
 
 
