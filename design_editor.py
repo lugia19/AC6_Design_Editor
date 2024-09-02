@@ -802,8 +802,12 @@ def process_assemble_bytes(assemble_bytes):
     # Process the first 28 bytes (7 part IDs)
     for i in range(0, 28, 4):
         part_id_bytes = assemble_bytes[i:i+4]
-        equipment_id, category = save_id_to_equipment_id(part_id_bytes)
-        parts.append((equipment_id, category))
+        if part_id_bytes == b'\xFF\xFF\xFF\xFF':
+            #Empty inner slot - tank booster
+            parts.append((-1, "booster"))
+        else:
+            equipment_id, category = save_id_to_equipment_id(part_id_bytes)
+            parts.append((equipment_id, category))
 
     # Check the separator bytes
     separator_bytes = assemble_bytes[28:32]
@@ -1265,7 +1269,10 @@ class DesignDecompressor(QWidget):
                 else:  # Booster, Generator, FCS
                     part_type = inner_types[i-4]
                     filtered_parts = [f"{part['ID']} {part['Name']}" for part in internals[part_type]]
+                if i == 4: part_field.addItem("-1 None")
+
                 part_field.addItems(filtered_parts)
+                if i == 4: part_field.setCurrentIndex(1)
 
     def load_weapons(self):
         cwd = os.getcwd()
