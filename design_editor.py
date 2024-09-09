@@ -74,7 +74,8 @@ def run_witchy(path:str, recursive:bool=False):
     args = [witchy_path, "-s", path]
     if recursive:
         args.insert(2, "-c")
-    subprocess.run(args, check=True, capture_output=True, text=True)
+    stuff = subprocess.run(args, check=True, capture_output=True, text=True)
+    print(stuff.stderr)
 
 def convert_to_bc7(image_path:str) -> str:
     filename = os.path.splitext(os.path.basename(image_path))[0]
@@ -399,7 +400,6 @@ class UserDesignData:
         self.unk04 = unk04
         self.unk08 = unk08
         self.presets = presets
-
     @classmethod
     def from_bytes(cls, data):
         # Extract the inner size from the header
@@ -427,9 +427,11 @@ class UserDesignData:
         instance = cls(unk0c, unk04, unk08, presets)
         return instance
 
-    def to_bytes(self):
+    def to_bytes(self, new_preset_index=None):
         # Calculate the inner content
-        header = struct.pack("<IIII", 0, 0, len(self.presets), len(self.presets))
+        if not new_preset_index:
+            new_preset_index = self.unk0c
+        header = struct.pack("<IIII", 0, 0, new_preset_index, len(self.presets))
         preset_data = b"".join(preset.to_bytes() for preset in self.presets)
 
         # Pad the preset_data with zeros to reach the fixed size
@@ -449,7 +451,7 @@ class UserDesignData:
         padding_size = (16 - (len(full_content) % 16)) % 16
         full_content += b'\x0C' * padding_size
 
-        return full_content, len(preset_data)+len(header)+16+16
+        return full_content, len(preset_data)+len(header)+16
 
     def add_preset(self, preset):
         self.presets.append(preset)
@@ -892,10 +894,11 @@ def get_all_designs_from_save(file_path):
         shutil.copy(file_path, temp_sl2_path)
 
         # Unpack the .sl2 file using run_witchy
-        run_witchy(temp_sl2_path, True)
+        run_witchy(temp_sl2_path)
 
         # Find the unpacked folder
-        unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
+        file_parts = os.path.splitext(os.path.basename(file_path))
+        unpacked_folder = f"{file_parts[0]}-{file_parts[1][1:]}"
         unpacked_path = os.path.join(temp_dir, unpacked_folder)
 
         all_presets: Dict[str, List[Preset]] = {}
@@ -1513,6 +1516,10 @@ class DesignDecompressor(QWidget):
     def dump_designs(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        subdirs = [d for d in os.listdir(default_dir) if os.path.isdir(os.path.join(default_dir, d))]
+        if len(subdirs) == 1:
+            default_dir = os.path.join(default_dir, subdirs[0])
+
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             all_designs = get_all_designs_from_save(file_path)
@@ -1534,6 +1541,9 @@ class DesignDecompressor(QWidget):
     def load_from_save(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        subdirs = [d for d in os.listdir(default_dir) if os.path.isdir(os.path.join(default_dir, d))]
+        if len(subdirs) == 1:
+            default_dir = os.path.join(default_dir, subdirs[0])
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             designs_dict = get_all_designs_from_save(file_path)
@@ -1640,10 +1650,14 @@ class DesignDecompressor(QWidget):
     def save_to_sl2(self):
         appdata_path = os.path.expandvars("%AppData%")
         default_dir = os.path.join(appdata_path, "ArmoredCore6")
+        subdirs = [d for d in os.listdir(default_dir) if os.path.isdir(os.path.join(default_dir, d))]
+        if len(subdirs) == 1:
+            default_dir = os.path.join(default_dir, subdirs[0])
         file_path, _ = QFileDialog.getOpenFileName(self, 'Select File', default_dir, 'Save Files (*.sl2 *.mod);;All Files (*)')
         if file_path:
             # Backup the original .sl2 file
-            backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.sl2"
+            execution_time_string = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+            backup_filename = f"{os.path.splitext(os.path.basename(file_path))[0]}-{execution_time_string}.sl2"
             backup_path = os.path.join(os.path.dirname(file_path), backup_filename)
             shutil.copy(file_path, backup_path)
 
@@ -1653,38 +1667,19 @@ class DesignDecompressor(QWidget):
             os.makedirs(temp_dir, exist_ok=True)
 
             # Copy the selected .sl2 file to the temporary directory
-            temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path))
+            temp_sl2_path = os.path.join(temp_dir, os.path.basename(file_path) + f"-{execution_time_string}")
             shutil.copy(file_path, temp_sl2_path)
 
-            # Unpack the .sl2 file using run_witchy
+            # Unpack the .sl2
             run_witchy(temp_sl2_path)
 
             # Find the unpacked folder
-            unpacked_folder = f"{os.path.splitext(os.path.basename(file_path))[0]}-sl2"
-            unpacked_path = os.path.join(temp_dir, unpacked_folder)
+            file_parts = os.path.splitext(os.path.basename(file_path))
+            unpacked_folder = f"{file_parts[0]}-{file_parts[1][1:]}"
+            unpacked_path = os.path.join(temp_dir, unpacked_folder + f"-{execution_time_string}")
 
-            # Create a subfolder for encrypted backups
-            encrypted_backup_path = os.path.join(temp_dir, "encrypted_backup")
-            os.mkdir(encrypted_backup_path)
 
-            # Copy all encrypted files to the backup folder
-            for root, _, files in os.walk(unpacked_path):
-                for file in files:
-                    if not file.endswith(".xml"):
-                        src = os.path.join(root, file)
-                        dst = os.path.join(encrypted_backup_path, file)
-                        shutil.copy(src, dst)
-
-            categories = []
-            for idx in range(4):
-                categories.append(f"Tab {idx + 1}")
-            # Present a dialog for the user to choose a category
-            category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories, 0, False)
-            if ok and category:
-                selected_category = int(category.split(" ")[1])
-            else:
-                return
-
+            #Construct the preset:
             thumbnail = ACThumbnail.empty_thumbnail()
             reply = QMessageBox.question(self, 'Thumbnail',
                                          'Do you want to add a thumbnail?',
@@ -1697,53 +1692,66 @@ class DesignDecompressor(QWidget):
                 if fname:
                     thumbnail = ACThumbnail.from_image(fname)
 
-            new_preset = Preset(selected_category, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
+            new_preset = Preset(1, date_time=datetime.datetime.now(), design=ASMC(self.generate_design_from_ui()),
                                 thumbnail=thumbnail)
             preset_length = len(new_preset.to_bytes())
 
+            categories = []
+            user_datas = dict()
 
-            user_data = None
-            data_path = ""
-
+            #Iterate over the data files, getting the amount of presets for each
             for data_idx in range(2, 7):
                 data_path = os.path.join(unpacked_path, f"USER_DATA0{str(data_idx).zfill(2)}")
                 decrypt_file(data_path)
                 with open(data_path, "rb") as file:
                     user_data = UserDesignData.from_bytes(file.read())
+                print(data_idx)
+                if user_data.to_bytes()[1] + preset_length < UserDesignData.inner_size:
+                    # We have enough space here.
+                    categories.append(f"Tab {data_idx-1}")
+                    if data_idx == 6:
+                        categories[-1] += " (Presets)"
+                user_datas[data_idx] = user_data
 
-                if user_data.to_bytes()[1]+preset_length < UserDesignData.inner_size:
-                    #We have enough space here.
-                    break
+            if len(categories) == 0:
+                QMessageBox.critical(None, "Error", f"You don't have any space remaining in this save file!")
+                return
 
-                if data_idx == 6:
-                    QMessageBox.critical(None, "Error", f"You don't have any space remaining in this save file!")
-                    return
+            # Present a dialog for the user to choose a category
+            category, ok = QInputDialog.getItem(self, "Select Tab", "Choose a tab:", categories, 0, False)
+            if ok and category:
+                selected_category = int(category.split(" ")[1])+1
+            else:
+                return
 
-            user_data.add_preset(new_preset)
+            new_preset.category = selected_category-1
 
-            with open(data_path, "wb") as file:
-                file.write(user_data.to_bytes()[0])
+            preset_multiplier = 1
+            new_preset_index = 0
+            for key, value in user_datas.items():
+                if key <= selected_category:
+                    new_preset_index += len(value.presets)
 
-            # Encrypt only the modified file
-            encrypt_file(data_path)
+            new_preset_index += preset_multiplier
+            for data_idx, user_data in user_datas.items():
+                if data_idx == selected_category:
+                    for _ in range(preset_multiplier):
+                        user_data.add_preset(new_preset)
 
-
-            bname = os.path.basename(data_path)
-            # Copy back all other encrypted files from the backup
-            for file in os.listdir(encrypted_backup_path):
-                if file != bname:
-                    src = os.path.join(encrypted_backup_path, file)
-                    dst = os.path.join(unpacked_path, file)
-                    shutil.copy(src, dst)
+                data_path = os.path.join(unpacked_path, f"USER_DATA0{str(data_idx).zfill(2)}")
+                with open(data_path, "wb") as file:
+                    file.write(user_data.to_bytes(new_preset_index)[0])
+                encrypt_file(data_path)
 
             run_witchy(unpacked_path)
 
             max_attempts = 5
             for attempt in range(max_attempts):
-                verify_sl2_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(temp_sl2_path))[0]}-verify.sl2")
+                verify_sl2_path = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(temp_sl2_path))[0]}-verify-{execution_time_string}.sl2")
                 shutil.copy(temp_sl2_path, verify_sl2_path)
 
-                verify_unpacked_folder = f"{os.path.splitext(os.path.basename(verify_sl2_path))[0]}-sl2"
+                file_parts = os.path.splitext(os.path.basename(verify_sl2_path))
+                verify_unpacked_folder = f"{file_parts[0]}-{file_parts[1][1:]}"
                 verify_unpacked_path = os.path.join(temp_dir, verify_unpacked_folder)
                 run_witchy(verify_sl2_path)
 
