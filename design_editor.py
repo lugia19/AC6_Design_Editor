@@ -500,14 +500,22 @@ class ColoringSectionData:
         for color in self.pattern_colors:
             data.extend(struct.pack('<BBBB', color.red(), color.green(), color.blue(), color.alpha()))
 
-        # Calculate unk40 based on the pattern checkbox states
-        unk40 = 0b00111111  # Default value with all bits set to 1
-        for i, color_row in enumerate(reversed(self.color_rows[:5])):
-            if color_row.pattern:
-                unk40 &= ~(1 << (i + 2))  # Set the corresponding bit to 0 if pattern is enabled
 
-        data.extend(struct.pack('<H', unk40))  # unk40
-        data.extend(b'\x00\x00')  # unk42
+        # Calculate unk40 based on the pattern checkbox states
+
+        # Order: Main, Sub, Support, Optional, Other, ???, ???
+        # Create flags array in same order as we read them (left to right in hex)
+        flags = [0, 0, 1]  # First 3 bits are fixed
+
+        # Add pattern bits from reversed color rows (to match reading code)
+        for color_row in reversed(self.color_rows[:5]):
+            flags.append(0 if color_row.pattern else 1)
+
+        # Convert flags array to integer, shifting each bit to proper position
+        unk40 = sum(bit << (7 - i) for i, bit in enumerate(flags))
+
+        data.extend(struct.pack('<H', unk40))
+        data.extend(b'\x00\x00')
 
         return bytes(data)
 
@@ -549,8 +557,21 @@ class ColoringSectionData:
         if len(data) < 66:
             data += b"\x00\x00"
         unk40 = struct.unpack('<H', data[64:66])[0]
-        for i, color_row in enumerate(reversed(coloring_section.color_rows[:5])):
-            color_row.pattern = not bool(unk40 & (1 << (i + 2)))
+
+        # Read bits from most significant to least significant
+        flags = [(unk40 >> (7 - i)) & 1 for i in range(8)]
+        # flags[0] is bit 0, etc.
+
+        # Validate the known bits
+        assert flags[0] == 0 and flags[1] == 0, "Bits 0-1 should be 0"
+        assert flags[2] == 1, "Bit 2 should be 1"
+
+        pattern_bits = flags[3:8]
+        #Order: Main, Sub, Support, Optional, Other
+
+        # Pattern bits are 3-7, apply them to reversed color rows
+        for color_row, flag in zip(reversed(coloring_section.color_rows[:5]), pattern_bits):
+            color_row.pattern = (flag == 0)
 
         # Skip unk42
 
