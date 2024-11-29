@@ -1906,10 +1906,10 @@ class DesignDecompressor(QWidget):
             section_data_bytes = section.export_settings().to_bytes()
             color_set_data.write(section_data_bytes)
             # Write dummy data for unknown sections
-            if i == 4:  # After Right weapon
+            if i == 5:  # After Right weapon
                 for _ in range(2):
                     color_set_data.write(section_data_bytes)  # Repeat Right weapon data
-            elif i == 7:  # After Left weapon
+            elif i == 6:  # After Left weapon
                 for _ in range(3):
                     color_set_data.write(section_data_bytes)  # Repeat Left weapon data
 
